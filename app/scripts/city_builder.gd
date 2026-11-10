@@ -12,10 +12,11 @@ const SPACING := 17.0
 const CITY_SEED := 20261110
 const GROUND_SIZE := 1200.0
 const MIN_ROOF_CLEARANCE := 2.5
-const FACADE_W := 128
-const FACADE_H := 256
-const WINDOW_COLS := 5
-const WINDOW_ROWS := 12
+const FACADE_W := 256
+const FACADE_H := 512
+const WINDOW_COLS := 8
+const WINDOW_ROWS := 24
+const POWERUP_COUNT := 14
 
 @export var build_roof_hud := true
 
@@ -25,6 +26,9 @@ var building_count := 0
 var _rng := RandomNumberGenerator.new()
 var _textures: Array[ImageTexture] = []
 var _roof_mat: StandardMaterial3D
+var _ac_mat: StandardMaterial3D
+var _tank_mat: StandardMaterial3D
+var roof_spots: Array[Vector3] = []
 
 
 func _ready() -> void:
@@ -32,6 +36,7 @@ func _ready() -> void:
 	_build_materials()
 	_build_ground()
 	_build_buildings()
+	_build_powerups()
 	_build_light_rig()
 	_build_backdrop()
 
@@ -49,18 +54,24 @@ func _build_materials() -> void:
 	_roof_mat = StandardMaterial3D.new()
 	_roof_mat.albedo_color = Color(0.2, 0.21, 0.23)
 	_roof_mat.roughness = 0.95
+	_ac_mat = StandardMaterial3D.new()
+	_ac_mat.albedo_color = Color(0.55, 0.56, 0.6)
+	_ac_mat.roughness = 0.7
+	_tank_mat = StandardMaterial3D.new()
+	_tank_mat.albedo_color = Color(0.45, 0.42, 0.4)
+	_tank_mat.roughness = 0.8
 
 
 func _make_facade_texture(base: Color) -> ImageTexture:
 	var img := Image.create(FACADE_W, FACADE_H, false, Image.FORMAT_RGB8)
 	img.fill(base)
-	for i in 600:
+	for i in 3000:
 		var shade := _rng.randf_range(-0.05, 0.05)
 		var c := base * (1.0 + shade)
 		img.set_pixel(_rng.randi() % FACADE_W, _rng.randi() % FACADE_H, c)
-	var margin_x := 10.0
-	var margin_top := 12.0
-	var margin_bottom := 8.0
+	var margin_x := 20.0
+	var margin_top := 24.0
+	var margin_bottom := 16.0
 	var cell_w := (FACADE_W - margin_x * 2.0) / WINDOW_COLS
 	var cell_h := (FACADE_H - margin_top - margin_bottom) / WINDOW_ROWS
 	for row in WINDOW_ROWS:
@@ -129,6 +140,7 @@ func _build_buildings() -> void:
 			var building := _make_building(pos, width, depth, height)
 			root.add_child(building)
 			building_count += 1
+			roof_spots.append(pos + Vector3(0.0, height + 0.5, 0.0))
 			if dist_to_center < SPACING:
 				spawn_building = building
 
@@ -170,6 +182,7 @@ func _make_building(pos: Vector3, width: float, depth: float, height: float) -> 
 	roof_cap.material_override = _roof_mat
 	roof_cap.position = Vector3(0.0, height + 0.25, 0.0)
 	building.add_child(roof_cap)
+	_add_roof_prop(building, width, depth, height)
 
 	var body := StaticBody3D.new()
 	body.name = "Body"
@@ -197,6 +210,53 @@ func _make_building(pos: Vector3, width: float, depth: float, height: float) -> 
 		building.add_child(roof)
 
 	return building
+
+
+func _add_roof_prop(building: Node3D, width: float, depth: float, height: float) -> void:
+	var roll := _rng.randf()
+	var prop := MeshInstance3D.new()
+	var x := _rng.randf_range(-(width * 0.5 - 1.6), width * 0.5 - 1.6)
+	var z := _rng.randf_range(-(depth * 0.5 - 1.6), depth * 0.5 - 1.6)
+	if roll < 0.18:
+		prop.name = "AcUnit"
+		var mesh := BoxMesh.new()
+		mesh.size = Vector3(1.4, 0.7, 1.1)
+		prop.mesh = mesh
+		prop.material_override = _ac_mat
+		prop.position = Vector3(x, height + 0.5 + 0.35, z)
+	elif roll < 0.3:
+		prop.name = "WaterTank"
+		var mesh := CylinderMesh.new()
+		mesh.top_radius = 0.55
+		mesh.bottom_radius = 0.6
+		mesh.height = 1.1
+		prop.mesh = mesh
+		prop.material_override = _tank_mat
+		prop.position = Vector3(x, height + 0.5 + 0.55, z)
+	else:
+		return
+	building.add_child(prop)
+
+
+func _build_powerups() -> void:
+	var container := Node3D.new()
+	container.name = "PowerUps"
+	add_child(container)
+	if roof_spots.is_empty():
+		return
+	var kinds := [PowerUp.LOWGRAV, PowerUp.TURBO]
+	for i in POWERUP_COUNT:
+		var spot := roof_spots[_rng.randi() % roof_spots.size()]
+		var pickup := PowerUp.new()
+		pickup.kind = kinds[i % kinds.size()]
+		pickup.position = spot + Vector3(0.0, 1.1, 0.0)
+		container.add_child(pickup)
+
+
+func random_roof_spot() -> Vector3:
+	if roof_spots.is_empty():
+		return Vector3.ZERO
+	return roof_spots[_rng.randi() % roof_spots.size()] + Vector3(0.0, 1.1, 0.0)
 
 
 func _build_backdrop() -> void:

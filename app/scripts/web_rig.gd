@@ -35,6 +35,11 @@ const MIN_ROPE := 1.2
 const CORD_RADIUS := 0.012
 const AIM_DOT_RADIUS := 0.05
 const HAND_TILT_DEGREES := 72.0
+const POWERUP_DURATION := 20.0
+const POWERUP_COLLECT_RADIUS := 1.3
+const LOWGRAV_GRAVITY_SCALE := 0.65
+const TURBO_SPEED_SCALE := 1.6
+const TURBO_REEL_SCALE := 1.5
 const HUD_FADE_SECONDS := 12.0
 
 @export var spawn_point := Vector3(0.0, 30.0, 0.0)
@@ -53,17 +58,24 @@ var _hud_time := 0.0
 var _hint: Label3D
 var _status: Label3D
 var _webs := {}
+var _powerup_times := {}
+var _aura: OmniLight3D
+var _aura_color := Color(0.0, 0.0, 0.0)
+var _land_fx: GPUParticles3D
 
 
 func _ready() -> void:
 	_setup_webs()
 	_setup_hud()
+	_setup_aura()
+	_setup_landing_fx()
 	respawn()
 
 
 func _process(delta: float) -> void:
 	_update_web_inputs()
 	_update_locomotion(delta)
+	_update_powerups(delta)
 	_update_cords()
 	_update_hud(delta)
 
@@ -133,6 +145,7 @@ func _make_web(hand: XRController3D, color: Color, is_left: bool) -> Dictionary:
 		"anchor": Vector3.ZERO,
 		"rope_length": 0.0,
 		"cord": cord,
+		"cord_color": color,
 		"pressed_was": false,
 		"aim_dot": dot,
 		"aiming_was": false,
@@ -249,7 +262,7 @@ func _update_web_input(web: Dictionary, side: String) -> void:
 	web["pressed_was"] = pressed
 	if bool(web["attached"]):
 		var delta := get_process_delta_time()
-		var reel := WEB_PULL_SPEED
+		var reel := _reel_base()
 		if hand.get_float("grip") > 0.5 or hand.is_button_pressed("grip_click"):
 			reel += GRIP_REEL_SPEED
 		web["rope_length"] = maxf(float(web["rope_length"]) - reel * delta, MIN_ROPE)
@@ -303,7 +316,7 @@ func _update_locomotion(delta: float) -> void:
 	else:
 		_velocity.y -= (_swing_gravity()) * delta
 		_apply_air_steer(delta)
-		_velocity = _velocity.limit_length(MAX_SPEED)
+		_velocity = _velocity.limit_length(_max_speed())
 		var prev_y := global_position.y
 		global_position += _velocity * delta
 		_solve_web_constraints(delta)
@@ -342,6 +355,9 @@ func _land_on_surface(prev_y: float) -> void:
 		return
 	global_position.y = surface_y
 	_velocity.y = 0.0
+	if _land_fx != null:
+		_land_fx.global_position = global_position + Vector3(0.0, 0.1, 0.0)
+		_land_fx.restart()
 
 
 func _apply_ground_friction(delta: float) -> void:
@@ -432,7 +448,89 @@ func _update_jump() -> void:
 
 
 func _swing_gravity() -> float:
-	return SWING_GRAVITY if _any_attached() else FLOAT_GRAVITY
+	var base := SWING_GRAVITY if _any_attached() else FLOAT_GRAVITY
+	if _powerup_times.has(PowerUp.LOWGRAV):
+		base *= LOWGRAV_GRAVITY_SCALE
+	return base
+
+
+func _max_speed() -> float:
+	return MAX_SPEED * (TURBO_SPEED_SCALE if _powerup_times.has(PowerUp.TURBO) else 1.0)
+
+
+func _reel_base() -> float:
+	return WEB_PULL_SPEED * (TURBO_REEL_SCALE if _powerup_times.has(PowerUp.TURBO) else 1.0)
+
+
+func _setup_aura() -> void:
+	_aura = OmniLight3D.new()
+	_aura.name = "PowerUpAura"
+	_aura.omni_range = 9.0
+	_aura.light_energy = 1.3
+	_aura.visible = false
+	camera.add_child(_aura)
+
+
+func _setup_landing_fx() -> void:
+	_land_fx = GPUParticles3D.new()
+	_land_fx.name = "LandFx"
+	_land_fx.emitting = false
+	_land_fx.one_shot = true
+	_land_fx.amount = 10
+	_land_fx.lifetime = 0.6
+	_land_fx.explosiveness = 1.0
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0.0, 1.0, 0.0)
+	pm.spread = 65.0
+	pm.initial_velocity_min = 1.5
+	pm.initial_velocity_max = 3.0
+	pm.gravity = Vector3(0.0, -6.0, 0.0)
+	pm.scale_min = 0.4
+	pm.scale_max = 0.8
+	pm.color = Color(0.72, 0.74, 0.8, 0.6)
+	_land_fx.process_material = pm
+	var draw := SphereMesh.new()
+	draw.radius = 0.07
+	draw.height = 0.14
+	draw.radial_segments = 8
+	draw.rings = 4
+	var draw_mat := StandardMaterial3D.new()
+	draw_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	draw_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	draw_mat.albedo_color = Color(0.8, 0.82, 0.86, 0.55)
+	draw.material = draw_mat
+	_land_fx.draw_pass_1 = draw
+	add_child(_land_fx)
+
+
+func _update_powerups(delta: float) -> void:
+	for kind in _powerup_times.keys():
+		_powerup_times[kind] = float(_powerup_times[kind]) - delta
+		if float(_powerup_times[kind]) <= 0.0:
+			_powerup_times.erase(kind)
+	var cam := camera.global_position
+	for node in get_tree().get_nodes_in_group("powerups"):
+		var pickup := node as PowerUp
+		if pickup == null or not pickup.is_available():
+			continue
+		if pickup.global_position.distance_to(cam) <= POWERUP_COLLECT_RADIUS:
+			pickup.collect()
+			_activate_powerup(pickup.kind)
+	if _powerup_times.is_empty() or _aura == null:
+		if _aura != null:
+			_aura.visible = false
+		return
+	_aura.visible = true
+	_aura.light_color = _aura_color
+
+
+func _activate_powerup(kind: String) -> void:
+	_powerup_times[kind] = POWERUP_DURATION
+	var color: Color = PowerUp.COLORS[kind]
+	_aura_color = color if _aura_color.is_equal_approx(Color(0.0, 0.0, 0.0)) else _aura_color.lerp(color, 0.5)
+	var label := "Anti-Gravity" if kind == PowerUp.LOWGRAV else "Turbo Swing"
+	_flash_hint("POWER UP — %s" % label)
+	_pulse_haptic(right_controller, 0.6)
 
 
 func _any_attached() -> bool:
@@ -528,6 +626,13 @@ func _update_cord(web: Dictionary) -> void:
 		cord.visible = false
 		return
 	cord.visible = true
+	var mat := cord.material_override as StandardMaterial3D
+	var base := web["cord_color"] as Color
+	if _grip_held():
+		var pulse := float(Time.get_ticks_msec()) * 0.012
+		mat.albedo_color = base * (1.0 + 0.3 * sin(pulse))
+	else:
+		mat.albedo_color = base
 	cord.global_position = (from + anchor) * 0.5
 	cord.look_at(anchor, Vector3.UP)
 	cord.rotate_object_local(Vector3.RIGHT, PI * 0.5)
@@ -551,14 +656,19 @@ func _update_hud(delta: float) -> void:
 		sides += "L "
 	if bool(_webs["R"]["attached"]):
 		sides += "R "
+	var buffs := ""
+	for kind in [PowerUp.LOWGRAV, PowerUp.TURBO]:
+		if _powerup_times.has(kind):
+			var label := "LOW-G" if kind == PowerUp.LOWGRAV else "TURBO"
+			buffs += "  ·  %s %ds" % [label, int(ceil(float(_powerup_times[kind])))]
 	var speed := _velocity.length()
 	if bool(_webs["L"]["attached"]) or bool(_webs["R"]["attached"]):
 		var reel_note := "  ·  reel" if _grip_held() else ""
-		_status.text = "web: %s  ·  %.1f m/s%s" % [sides.strip_edges(), speed, reel_note]
+		_status.text = "web: %s  ·  %.1f m/s%s%s" % [sides.strip_edges(), speed, reel_note, buffs]
 	elif speed > 1.0:
-		_status.text = "%.1f m/s" % speed
+		_status.text = "%.1f m/s%s" % [speed, buffs]
 	else:
-		_status.text = ""
+		_status.text = buffs.strip_edges()
 
 
 func _flash_hint(text: String) -> void:
