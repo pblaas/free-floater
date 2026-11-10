@@ -17,6 +17,7 @@ const FACADE_H := 512
 const WINDOW_COLS := 8
 const WINDOW_ROWS := 24
 const POWERUP_COUNT := 14
+const AIR_POWERUP_COUNT := 8
 
 @export var build_roof_hud := true
 
@@ -29,6 +30,7 @@ var _roof_mat: StandardMaterial3D
 var _ac_mat: StandardMaterial3D
 var _tank_mat: StandardMaterial3D
 var roof_spots: Array[Vector3] = []
+var _building_boxes: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -141,6 +143,12 @@ func _build_buildings() -> void:
 			root.add_child(building)
 			building_count += 1
 			roof_spots.append(pos + Vector3(0.0, height + 0.5, 0.0))
+			_building_boxes.append({
+				"pos": pos,
+				"w": width,
+				"d": depth,
+				"h": height,
+			})
 			if dist_to_center < SPACING:
 				spawn_building = building
 
@@ -242,14 +250,21 @@ func _build_powerups() -> void:
 	var container := Node3D.new()
 	container.name = "PowerUps"
 	add_child(container)
-	if roof_spots.is_empty():
-		return
 	var kinds := [PowerUp.LOWGRAV, PowerUp.TURBO]
 	for i in POWERUP_COUNT:
+		if roof_spots.is_empty():
+			break
 		var spot := roof_spots[_rng.randi() % roof_spots.size()]
 		var pickup := PowerUp.new()
 		pickup.kind = kinds[i % kinds.size()]
+		pickup.spot_kind = "roof"
 		pickup.position = spot + Vector3(0.0, 1.1, 0.0)
+		container.add_child(pickup)
+	for i in AIR_POWERUP_COUNT:
+		var pickup := PowerUp.new()
+		pickup.kind = kinds[(POWERUP_COUNT + i) % kinds.size()]
+		pickup.spot_kind = "air"
+		pickup.position = random_air_spot()
 		container.add_child(pickup)
 
 
@@ -257,6 +272,31 @@ func random_roof_spot() -> Vector3:
 	if roof_spots.is_empty():
 		return Vector3.ZERO
 	return roof_spots[_rng.randi() % roof_spots.size()] + Vector3(0.0, 1.1, 0.0)
+
+
+func random_air_spot() -> Vector3:
+	var bounds := (GRID_SIZE - 1) * 0.5 * SPACING
+	for attempt in 24:
+		var p := Vector3(
+			_rng.randf_range(-bounds, bounds),
+			_rng.randf_range(14.0, 44.0),
+			_rng.randf_range(-bounds, bounds)
+		)
+		if p.length() < SPACING * 1.2:
+			continue
+		if not _inside_building(p):
+			return p
+	return Vector3(0.0, 30.0, 0.0)
+
+
+func _inside_building(p: Vector3) -> bool:
+	for box in _building_boxes:
+		var pos: Vector3 = box["pos"]
+		if absf(p.x - pos.x) < float(box["w"]) * 0.5 + 0.6 \
+				and absf(p.z - pos.z) < float(box["d"]) * 0.5 + 0.6 \
+				and p.y < float(box["h"]) + 1.0:
+			return true
+	return false
 
 
 func _build_backdrop() -> void:

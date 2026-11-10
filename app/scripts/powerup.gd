@@ -17,6 +17,7 @@ const COLORS := {
 }
 
 var kind := LOWGRAV
+var spot_kind := "roof"
 var collected := false
 
 var _phase := 0.0
@@ -80,7 +81,10 @@ func collect() -> void:
 func _respawn() -> void:
 	var city := _find_city()
 	if city != null:
-		global_position = city.random_roof_spot()
+		if spot_kind == "air":
+			global_position = city.random_air_spot()
+		else:
+			global_position = city.random_roof_spot()
 	_phase = fmod(global_position.x + global_position.z, TAU)
 	collected = false
 	visible = true
