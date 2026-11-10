@@ -10,7 +10,7 @@ const BUILDING_LAYER := 2
 const GRID_SIZE := 15
 const SPACING := 17.0
 const CITY_SEED := 20261110
-const GROUND_SIZE := 640.0
+const GROUND_SIZE := 1200.0
 const MIN_ROOF_CLEARANCE := 2.5
 const FACADE_W := 128
 const FACADE_H := 256
@@ -33,6 +33,7 @@ func _ready() -> void:
 	_build_ground()
 	_build_buildings()
 	_build_light_rig()
+	_build_backdrop()
 
 
 func _build_materials() -> void:
@@ -198,6 +199,86 @@ func _make_building(pos: Vector3, width: float, depth: float, height: float) -> 
 	return building
 
 
+func _build_backdrop() -> void:
+	_add_backdrop_boxes(
+		"SkylineNear", 70, 150.0, 195.0,
+		Vector3(7.0, 14.0, 7.0), Vector3(16.0, 48.0, 16.0),
+		Color(0.4, 0.43, 0.5)
+	)
+	_add_backdrop_boxes(
+		"SkylineFar", 90, 240.0, 300.0,
+		Vector3(9.0, 20.0, 9.0), Vector3(20.0, 62.0, 20.0),
+		Color(0.48, 0.51, 0.58)
+	)
+	_add_backdrop_mountains()
+
+
+func _add_backdrop_boxes(
+	name: String,
+	count: int,
+	radius_min: float,
+	radius_max: float,
+	size_min: Vector3,
+	size_max: Vector3,
+	color: Color
+) -> void:
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = color
+
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3.ONE
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = mesh
+	mm.instance_count = count
+	for i in count:
+		var angle := TAU * float(i) / float(count) + _rng.randf_range(-0.035, 0.035)
+		var r := _rng.randf_range(radius_min, radius_max)
+		var w := _rng.randf_range(size_min.x, size_max.x)
+		var h := _rng.randf_range(size_min.y, size_max.y)
+		var d := _rng.randf_range(size_min.z, size_max.z)
+		var pos := Vector3(cos(angle) * r, h * 0.5, sin(angle) * r)
+		mm.set_instance_transform(i, Transform3D(Basis.from_scale(Vector3(w, h, d)), pos))
+	var instance := MultiMeshInstance3D.new()
+	instance.name = name
+	instance.multimesh = mm
+	instance.material_override = mat
+	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(instance)
+
+
+func _add_backdrop_mountains() -> void:
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(0.55, 0.58, 0.66)
+
+	var mesh := CylinderMesh.new()
+	mesh.top_radius = 0.06
+	mesh.bottom_radius = 0.5
+	mesh.height = 1.0
+	mesh.radial_segments = 8
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = mesh
+	var count := 16
+	mm.instance_count = count
+	for i in count:
+		var angle := TAU * float(i) / float(count) + _rng.randf_range(-0.09, 0.09)
+		var r := _rng.randf_range(320.0, 400.0)
+		var w := _rng.randf_range(90.0, 170.0)
+		var h := _rng.randf_range(60.0, 150.0)
+		var pos := Vector3(cos(angle) * r, h * 0.5 - 4.0, sin(angle) * r)
+		var basis := Basis.from_scale(Vector3(w, h, w * _rng.randf_range(0.7, 1.3)))
+		mm.set_instance_transform(i, Transform3D(basis, pos))
+	var instance := MultiMeshInstance3D.new()
+	instance.name = "Mountains"
+	instance.multimesh = mm
+	instance.material_override = mat
+	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(instance)
+
+
 func _build_light_rig() -> void:
 	var sun := DirectionalLight3D.new()
 	sun.name = "Sun"
@@ -212,8 +293,8 @@ func _build_light_rig() -> void:
 	var sky_mat := ProceduralSkyMaterial.new()
 	sky_mat.sky_top_color = Color(0.28, 0.42, 0.62)
 	sky_mat.sky_horizon_color = Color(0.62, 0.65, 0.72)
-	sky_mat.ground_bottom_color = Color(0.12, 0.12, 0.14)
-	sky_mat.ground_horizon_color = Color(0.55, 0.58, 0.64)
+	sky_mat.ground_bottom_color = Color(0.58, 0.61, 0.68)
+	sky_mat.ground_horizon_color = Color(0.62, 0.65, 0.72)
 	sky.sky_material = sky_mat
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY

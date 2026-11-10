@@ -34,7 +34,7 @@ const GRIP_REEL_SPEED := 8.0
 const MIN_ROPE := 1.2
 const CORD_RADIUS := 0.012
 const AIM_DOT_RADIUS := 0.05
-const GLOVE_COLOR := Color(0.55, 0.08, 0.1)
+const HAND_TILT_DEGREES := 72.0
 const HUD_FADE_SECONDS := 12.0
 
 @export var spawn_point := Vector3(0.0, 30.0, 0.0)
@@ -93,7 +93,7 @@ func _setup_webs() -> void:
 
 
 func _make_web(hand: XRController3D, color: Color, is_left: bool) -> Dictionary:
-	var hand_mesh := _make_hand_mesh(hand, is_left)
+	var hand_mesh := _make_hand_mesh(hand, color, is_left)
 	var cord := MeshInstance3D.new()
 	cord.name = "Cord_%s" % String(hand.name)
 	var mesh := CylinderMesh.new()
@@ -139,11 +139,12 @@ func _make_web(hand: XRController3D, color: Color, is_left: bool) -> Dictionary:
 	}
 
 
-func _make_hand_mesh(hand: XRController3D, is_left: bool) -> Node3D:
+func _make_hand_mesh(hand: XRController3D, color: Color, is_left: bool) -> Node3D:
 	var root := Node3D.new()
 	root.name = "HandMesh_%s" % String(hand.name)
+	root.rotation.x = -deg_to_rad(HAND_TILT_DEGREES)
 	var glove := StandardMaterial3D.new()
-	glove.albedo_color = GLOVE_COLOR
+	glove.albedo_color = color
 	glove.roughness = 0.6
 
 	var palm := MeshInstance3D.new()
@@ -175,7 +176,7 @@ func _make_hand_mesh(hand: XRController3D, is_left: bool) -> Node3D:
 	thumb_mesh.height = 0.075
 	thumb.mesh = thumb_mesh
 	thumb.material_override = glove
-	var side := 1.0 if not is_left else -1.0
+	var side := -1.0 if not is_left else 1.0
 	thumb.position = Vector3(side * 0.05, -0.005, -0.02)
 	thumb.rotation.z = side * -0.9
 	thumb.rotation.x = -0.3
