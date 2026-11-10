@@ -1,0 +1,593 @@
+extends XROrigin3D
+class_name WebRig
+
+## XR rig with Spider-Man-style web swinging.
+## Hold a trigger to shoot a web at a building (layer 2); the cord tethers
+## the head to the anchor as a pendulum constraint. Release the trigger to
+## let go and keep your momentum. Left AX = jump, right AX = respawn,
+## grip while attached = reel in.
+
+signal web_attached(side: String, anchor: Vector3)
+signal web_detached(side: String, velocity: Vector3)
+
+const SWING_GRAVITY := 8.0
+const FLOAT_GRAVITY := 3.0
+const MAX_SPEED := 28.0
+const AIR_STEER_ACCEL := 7.0
+const AIR_TURN_SPEED := 90.0
+const WALK_SPEED := 2.5
+const SNAP_TURN_DEGREES := 30.0
+const STICK_DEADZONE := 0.2
+const GROUND_FRICTION := 4.0
+const GROUND_SLIDE_MIN := 0.4
+const JUMP_UP := 6.0
+const JUMP_FORWARD := 3.5
+const WEB_REACH := 60.0
+const WEBBABLE_MASK := 2
+const SURFACE_MASK := 3
+const SURFACE_PROBE_UP := 50.0
+const PLAYER_RADIUS := 0.45
+const PUSH_PROBES := 8
+const WEB_PULL_SPEED := 6.0
+const WEB_PULL_ACCEL := 6.0
+const GRIP_REEL_SPEED := 8.0
+const MIN_ROPE := 1.2
+const CORD_RADIUS := 0.012
+const AIM_DOT_RADIUS := 0.05
+const GLOVE_COLOR := Color(0.55, 0.08, 0.1)
+const HUD_FADE_SECONDS := 12.0
+
+@export var spawn_point := Vector3(0.0, 30.0, 0.0)
+
+@onready var camera: XRCamera3D = $XRCamera3D
+@onready var left_controller: XRController3D = $LeftController
+@onready var right_controller: XRController3D = $RightController
+
+var locomotion_enabled := true
+
+var _velocity := Vector3.ZERO
+var _snap_ready := true
+var _left_jump_was := false
+var _right_respawn_was := false
+var _hud_time := 0.0
+var _hint: Label3D
+var _status: Label3D
+var _webs := {}
+
+
+func _ready() -> void:
+	_setup_webs()
+	_setup_hud()
+	respawn()
+
+
+func _process(delta: float) -> void:
+	_update_web_inputs()
+	_update_locomotion(delta)
+	_update_cords()
+	_update_hud(delta)
+
+
+static func solve_rope(
+	position: Vector3,
+	velocity: Vector3,
+	anchor: Vector3,
+	rope_length: float
+) -> Array:
+	var offset := position - anchor
+	var dist := offset.length()
+	if dist <= rope_length or dist <= 0.0001:
+		return [position, velocity]
+	var normal := offset / dist
+	var new_position := anchor + normal * rope_length
+	var radial := velocity.dot(normal)
+	var new_velocity := velocity
+	if radial > 0.0:
+		new_velocity = velocity - normal * radial
+	return [new_position, new_velocity]
+
+
+func _setup_webs() -> void:
+	_webs["L"] = _make_web(left_controller, Color(1.0, 1.0, 1.0), true)
+	_webs["R"] = _make_web(right_controller, Color(0.85, 0.95, 1.0), false)
+
+
+func _make_web(hand: XRController3D, color: Color, is_left: bool) -> Dictionary:
+	var hand_mesh := _make_hand_mesh(hand, is_left)
+	var cord := MeshInstance3D.new()
+	cord.name = "Cord_%s" % String(hand.name)
+	var mesh := CylinderMesh.new()
+	mesh.height = 1.0
+	mesh.top_radius = CORD_RADIUS
+	mesh.bottom_radius = CORD_RADIUS
+	mesh.radial_segments = 6
+	cord.mesh = mesh
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = color
+	cord.material_override = mat
+	cord.visible = false
+	var parent := get_parent()
+	if parent != null:
+		parent.add_child.call_deferred(cord)
+	var dot := MeshInstance3D.new()
+	dot.name = "AimDot_%s" % String(hand.name)
+	var dot_mesh := SphereMesh.new()
+	dot_mesh.radius = AIM_DOT_RADIUS
+	dot_mesh.height = AIM_DOT_RADIUS * 2.0
+	dot_mesh.radial_segments = 12
+	dot_mesh.rings = 6
+	dot.mesh = dot_mesh
+	var dot_mat := StandardMaterial3D.new()
+	dot_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	dot_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	dot_mat.albedo_color = Color(color.r, color.g, color.b, 0.4)
+	dot.material_override = dot_mat
+	dot.visible = false
+	if parent != null:
+		parent.add_child.call_deferred(dot)
+	return {
+		"hand": hand,
+		"web_origin": hand_mesh.get_node("WebOrigin") as Node3D,
+		"attached": false,
+		"anchor": Vector3.ZERO,
+		"rope_length": 0.0,
+		"cord": cord,
+		"pressed_was": false,
+		"aim_dot": dot,
+		"aiming_was": false,
+	}
+
+
+func _make_hand_mesh(hand: XRController3D, is_left: bool) -> Node3D:
+	var root := Node3D.new()
+	root.name = "HandMesh_%s" % String(hand.name)
+	var glove := StandardMaterial3D.new()
+	glove.albedo_color = GLOVE_COLOR
+	glove.roughness = 0.6
+
+	var palm := MeshInstance3D.new()
+	palm.name = "Palm"
+	var palm_mesh := BoxMesh.new()
+	palm_mesh.size = Vector3(0.085, 0.11, 0.03)
+	palm.mesh = palm_mesh
+	palm.material_override = glove
+	palm.position = Vector3(0.0, 0.01, -0.045)
+	root.add_child(palm)
+
+	for i in 4:
+		var finger := MeshInstance3D.new()
+		finger.name = "Finger%d" % i
+		var finger_mesh := CapsuleMesh.new()
+		finger_mesh.radius = 0.011
+		finger_mesh.height = 0.1
+		finger.mesh = finger_mesh
+		finger.material_override = glove
+		var x := -0.032 + float(i) * 0.021
+		finger.position = Vector3(x, 0.1, -0.045)
+		finger.rotation.z = -x * 2.2
+		root.add_child(finger)
+
+	var thumb := MeshInstance3D.new()
+	thumb.name = "Thumb"
+	var thumb_mesh := CapsuleMesh.new()
+	thumb_mesh.radius = 0.012
+	thumb_mesh.height = 0.075
+	thumb.mesh = thumb_mesh
+	thumb.material_override = glove
+	var side := 1.0 if not is_left else -1.0
+	thumb.position = Vector3(side * 0.05, -0.005, -0.02)
+	thumb.rotation.z = side * -0.9
+	thumb.rotation.x = -0.3
+	root.add_child(thumb)
+
+	var shooter := MeshInstance3D.new()
+	shooter.name = "WebShooter"
+	var shooter_mesh := BoxMesh.new()
+	shooter_mesh.size = Vector3(0.028, 0.028, 0.006)
+	shooter.mesh = shooter_mesh
+	var shooter_mat := StandardMaterial3D.new()
+	shooter_mat.albedo_color = Color(0.85, 0.85, 0.9)
+	shooter_mat.metallic = 0.6
+	shooter_mat.roughness = 0.3
+	shooter.material_override = shooter_mat
+	shooter.position = Vector3(0.0, 0.01, -0.064)
+	root.add_child(shooter)
+
+	var origin := Marker3D.new()
+	origin.name = "WebOrigin"
+	origin.position = Vector3(0.0, 0.01, -0.07)
+	root.add_child(origin)
+
+	hand.add_child(root)
+	return root
+
+
+func _setup_hud() -> void:
+	_hint = Label3D.new()
+	_hint.name = "Hint"
+	_hint.position = Vector3(0.0, -0.35, -0.8)
+	_hint.pixel_size = 0.001
+	_hint.font_size = 22
+	_hint.modulate = Color(0.75, 0.85, 1.0, 0.95)
+	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_hint.no_depth_test = true
+	_hint.text = (
+		"Hold TRIGGER at a building: shoot web\n"
+		+ "Web pulls you to the anchor; GRIP reels faster\n"
+		+ "Release TRIGGER: let go (keep momentum)\n"
+		+ "No web out: floaty low-gravity air\n"
+		+ "Sticks: walk / turn · Left AX: jump · Right AX: respawn"
+	)
+	camera.add_child(_hint)
+	_hud_time = HUD_FADE_SECONDS
+
+	_status = Label3D.new()
+	_status.name = "Status"
+	_status.position = Vector3(0.0, -0.62, -0.8)
+	_status.pixel_size = 0.001
+	_status.font_size = 26
+	_status.modulate = Color(0.5, 0.95, 0.7)
+	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_status.no_depth_test = true
+	camera.add_child(_status)
+
+
+func _update_web_inputs() -> void:
+	_update_web_input(_webs["L"], "L")
+	_update_web_input(_webs["R"], "R")
+
+
+func _update_web_input(web: Dictionary, side: String) -> void:
+	var hand := web["hand"] as XRController3D
+	var pressed := hand.is_button_pressed("trigger_click")
+	if pressed and not bool(web["pressed_was"]):
+		_try_attach(web, side)
+	elif not pressed and bool(web["pressed_was"]):
+		_detach(web, side)
+	web["pressed_was"] = pressed
+	if bool(web["attached"]):
+		var delta := get_process_delta_time()
+		var reel := WEB_PULL_SPEED
+		if hand.get_float("grip") > 0.5 or hand.is_button_pressed("grip_click"):
+			reel += GRIP_REEL_SPEED
+		web["rope_length"] = maxf(float(web["rope_length"]) - reel * delta, MIN_ROPE)
+
+
+func _try_attach(web: Dictionary, side: String) -> void:
+	var hand := web["hand"] as XRController3D
+	var palm := web["web_origin"] as Node3D
+	var from := palm.global_position if palm != null else hand.global_position
+	var dir := -hand.global_transform.basis.z
+	var space := get_viewport().get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(from, from + dir * WEB_REACH, WEBBABLE_MASK)
+	var hit := space.intersect_ray(query)
+	if hit.is_empty():
+		_flash_hint("no attach point — aim at a building")
+		return
+	web["attached"] = true
+	web["anchor"] = hit["position"] as Vector3
+	var head := camera.global_position
+	web["rope_length"] = maxf(head.distance_to(hit["position"] as Vector3), MIN_ROPE)
+	_pulse_haptic(hand, 0.8)
+	web_attached.emit(side, hit["position"] as Vector3)
+
+
+func _detach(web: Dictionary, side: String) -> void:
+	if not bool(web["attached"]):
+		return
+	web["attached"] = false
+	var cord := web["cord"] as MeshInstance3D
+	if cord != null:
+		cord.visible = false
+	var hand := web["hand"] as XRController3D
+	_pulse_haptic(hand, 0.3)
+	web_detached.emit(side, _velocity)
+
+
+func _update_locomotion(delta: float) -> void:
+	if not locomotion_enabled:
+		return
+	var surface_y := _surface_y_below()
+	var grounded := (
+		surface_y >= 0.0
+		and absf(global_position.y - surface_y) <= 0.02
+		and _velocity.y <= 0.001
+	)
+	if grounded and not _any_attached():
+		_apply_ground_friction(delta)
+		_update_walk(delta)
+		_update_snap_turn()
+		_update_jump()
+	else:
+		_velocity.y -= (_swing_gravity()) * delta
+		_apply_air_steer(delta)
+		_velocity = _velocity.limit_length(MAX_SPEED)
+		var prev_y := global_position.y
+		global_position += _velocity * delta
+		_solve_web_constraints(delta)
+		_push_out_of_buildings()
+		_land_on_surface(prev_y)
+		if global_position.y < 0.0:
+			global_position.y = 0.0
+			_velocity.y = 0.0
+
+
+func _surface_y_below() -> float:
+	var feet := global_position
+	var space := get_viewport().get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(
+		feet + Vector3.UP, feet - Vector3.UP, SURFACE_MASK)
+	var hit := space.intersect_ray(query)
+	if hit.is_empty():
+		return -1.0
+	return (hit["position"] as Vector3).y
+
+
+func _land_on_surface(prev_y: float) -> void:
+	if _velocity.y > 0.001:
+		return
+	var feet := global_position
+	var space := get_viewport().get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(
+		feet + Vector3.UP * SURFACE_PROBE_UP, feet - Vector3.UP, SURFACE_MASK)
+	var hit := space.intersect_ray(query)
+	if hit.is_empty():
+		return
+	var surface_y := (hit["position"] as Vector3).y
+	if prev_y < surface_y - 0.05:
+		return
+	if feet.y >= surface_y:
+		return
+	global_position.y = surface_y
+	_velocity.y = 0.0
+
+
+func _apply_ground_friction(delta: float) -> void:
+	var decay := maxf(0.0, 1.0 - GROUND_FRICTION * delta)
+	var horizontal := Vector3(_velocity.x, 0.0, _velocity.z) * decay
+	if horizontal.length() < GROUND_SLIDE_MIN:
+		horizontal = Vector3.ZERO
+	_velocity = horizontal
+
+
+func _update_walk(delta: float) -> void:
+	var move := _walk_axis(left_controller.get_vector2("primary"))
+	move += _walk_axis(right_controller.get_vector2("primary"))
+	move = clampf(move, -1.0, 1.0)
+	if is_zero_approx(move):
+		return
+	var forward := -camera.global_transform.basis.z
+	forward.y = 0.0
+	if forward.length_squared() < 0.0001:
+		return
+	forward = forward.normalized()
+	global_position += forward * move * WALK_SPEED * delta
+
+
+func _walk_axis(stick: Vector2) -> float:
+	stick = _rescaled(stick)
+	if stick == Vector2.ZERO or absf(stick.y) <= absf(stick.x):
+		return 0.0
+	return stick.y
+
+
+func _turn_axis(stick: Vector2) -> float:
+	if stick.length() < STICK_DEADZONE:
+		return 0.0
+	if absf(stick.x) <= absf(stick.y):
+		return 0.0
+	return stick.x
+
+
+func _update_snap_turn() -> void:
+	var turn := _turn_axis(left_controller.get_vector2("primary"))
+	turn += _turn_axis(right_controller.get_vector2("primary"))
+	if not _snap_ready:
+		if absf(turn) < STICK_DEADZONE:
+			_snap_ready = true
+		return
+	if absf(turn) < STICK_DEADZONE:
+		return
+	_rotate_rig(-deg_to_rad(SNAP_TURN_DEGREES) * signf(turn))
+	_snap_ready = false
+
+
+func _apply_air_steer(delta: float) -> void:
+	var steer := _rescaled(left_controller.get_vector2("primary"))
+	steer += _rescaled(right_controller.get_vector2("primary"))
+	steer = steer.limit_length(1.0)
+	var turn := _turn_axis(left_controller.get_vector2("primary"))
+	turn += _turn_axis(right_controller.get_vector2("primary"))
+	if absf(turn) > STICK_DEADZONE:
+		_rotate_rig(-deg_to_rad(AIR_TURN_SPEED) * signf(turn) * delta)
+	if steer == Vector2.ZERO:
+		return
+	var forward := -camera.global_transform.basis.z
+	forward.y = 0.0
+	if forward.length_squared() < 0.0001:
+		return
+	forward = forward.normalized()
+	var right := Vector3(forward.z, 0.0, -forward.x)
+	_velocity += (forward * steer.y + right * steer.x) * AIR_STEER_ACCEL * delta
+
+
+func _rotate_rig(angle: float) -> void:
+	var head := camera.global_position
+	global_position = head + (global_position - head).rotated(Vector3.UP, angle)
+	global_rotate(Vector3.UP, angle)
+
+
+func _update_jump() -> void:
+	var pressed := left_controller.is_button_pressed("ax_button")
+	if pressed and not _left_jump_was:
+		_velocity.y = JUMP_UP
+		var forward := -camera.global_transform.basis.z
+		forward.y = 0.0
+		if forward.length_squared() > 0.0001:
+			_velocity += forward.normalized() * JUMP_FORWARD
+		_pulse_haptic(left_controller, 0.4)
+	_left_jump_was = pressed
+
+
+func _swing_gravity() -> float:
+	return SWING_GRAVITY if _any_attached() else FLOAT_GRAVITY
+
+
+func _any_attached() -> bool:
+	return bool(_webs["L"]["attached"]) or bool(_webs["R"]["attached"])
+
+
+func _solve_web_constraints(delta: float) -> void:
+	for side in ["L", "R"]:
+		var web: Dictionary = _webs[side]
+		if not bool(web["attached"]):
+			continue
+		var head := camera.global_position
+		var to_anchor := (web["anchor"] as Vector3) - head
+		var dist := to_anchor.length()
+		if dist > 0.5:
+			_velocity += (to_anchor / dist) * WEB_PULL_ACCEL * delta
+		var solved := solve_rope(
+			head,
+			_velocity,
+			web["anchor"] as Vector3,
+			float(web["rope_length"])
+		)
+		global_position += (solved[0] as Vector3) - head
+		_velocity = solved[1] as Vector3
+
+
+func _push_out_of_buildings() -> void:
+	var head := camera.global_position
+	var space := get_viewport().get_world_3d().direct_space_state
+	for i in PUSH_PROBES:
+		var angle := TAU * float(i) / float(PUSH_PROBES)
+		var dir := Vector3(cos(angle), 0.0, sin(angle))
+		var query := PhysicsRayQueryParameters3D.create(head, head + dir * PLAYER_RADIUS, WEBBABLE_MASK)
+		var hit := space.intersect_ray(query)
+		if hit.is_empty():
+			continue
+		var penetration := PLAYER_RADIUS - head.distance_to(hit["position"] as Vector3)
+		if penetration <= 0.0:
+			continue
+		global_position -= dir * penetration
+		var into_wall := _velocity.dot(dir)
+		if into_wall > 0.0:
+			_velocity -= dir * into_wall
+
+
+func _update_cords() -> void:
+	_update_cord(_webs["L"])
+	_update_cord(_webs["R"])
+	_update_aim_dot(_webs["L"])
+	_update_aim_dot(_webs["R"])
+
+
+func _update_aim_dot(web: Dictionary) -> void:
+	var dot := web["aim_dot"] as MeshInstance3D
+	if dot == null:
+		return
+	var hand := web["hand"] as XRController3D
+	if bool(web["attached"]):
+		dot.visible = false
+		web["aiming_was"] = false
+		return
+	var palm := web["web_origin"] as Node3D
+	var from := palm.global_position if palm != null else hand.global_position
+	var dir := -hand.global_transform.basis.z
+	var space := get_viewport().get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(from, from + dir * WEB_REACH, WEBBABLE_MASK)
+	var hit := space.intersect_ray(query)
+	var aiming := not hit.is_empty()
+	if aiming:
+		var point := hit["position"] as Vector3
+		dot.visible = true
+		dot.global_position = point + (from - point).normalized() * 0.06
+	else:
+		dot.visible = false
+	if aiming and not bool(web["aiming_was"]):
+		_pulse_haptic(hand, 0.1)
+	web["aiming_was"] = aiming
+
+
+func _update_cord(web: Dictionary) -> void:
+	var cord := web["cord"] as MeshInstance3D
+	if cord == null:
+		return
+	if not bool(web["attached"]):
+		cord.visible = false
+		return
+	var hand := web["hand"] as XRController3D
+	var palm := web["web_origin"] as Node3D
+	var anchor := web["anchor"] as Vector3
+	var from := palm.global_position if palm != null else hand.global_position
+	var length := from.distance_to(anchor)
+	if length < 0.05:
+		cord.visible = false
+		return
+	cord.visible = true
+	cord.global_position = (from + anchor) * 0.5
+	cord.look_at(anchor, Vector3.UP)
+	cord.rotate_object_local(Vector3.RIGHT, PI * 0.5)
+	cord.scale = Vector3(1.0, length, 1.0)
+
+
+func respawn() -> void:
+	for side in ["L", "R"]:
+		_detach(_webs[side], side)
+	_velocity = Vector3.ZERO
+	global_position = spawn_point
+
+
+func _update_hud(delta: float) -> void:
+	if _hud_time > 0.0:
+		_hud_time -= delta
+		if _hud_time <= 0.0:
+			_hint.visible = false
+	var sides := ""
+	if bool(_webs["L"]["attached"]):
+		sides += "L "
+	if bool(_webs["R"]["attached"]):
+		sides += "R "
+	var speed := _velocity.length()
+	if bool(_webs["L"]["attached"]) or bool(_webs["R"]["attached"]):
+		var reel_note := "  ·  reel" if _grip_held() else ""
+		_status.text = "web: %s  ·  %.1f m/s%s" % [sides.strip_edges(), speed, reel_note]
+	elif speed > 1.0:
+		_status.text = "%.1f m/s" % speed
+	else:
+		_status.text = ""
+
+
+func _flash_hint(text: String) -> void:
+	_hint.text = text
+	_hint.visible = true
+	_hud_time = 1.5
+
+
+func _grip_held() -> bool:
+	for side in ["L", "R"]:
+		var web: Dictionary = _webs[side]
+		if not bool(web["attached"]):
+			continue
+		var hand := web["hand"] as XRController3D
+		if hand.get_float("grip") > 0.5 or hand.is_button_pressed("grip_click"):
+			return true
+	return false
+
+
+func _pulse_haptic(hand: XRController3D, strength: float) -> void:
+	var interface := XRServer.find_interface("OpenXR")
+	if interface == null or not interface.is_initialized():
+		return
+	interface.trigger_haptic_pulse("haptic", hand.tracker, 0.0, strength, 0.08, 0.0)
+
+
+func _rescaled(stick: Vector2) -> Vector2:
+	var magnitude := stick.length()
+	if magnitude < STICK_DEADZONE:
+		return Vector2.ZERO
+	if magnitude >= 1.0:
+		return stick
+	return stick * ((magnitude - STICK_DEADZONE) / ((1.0 - STICK_DEADZONE) * magnitude))

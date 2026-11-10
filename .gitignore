@@ -1,0 +1,12 @@
+# Build artifacts
+build/
+
+# Godot caches and imports
+.godot/
+*.translation
+export_credentials.cfg
+
+# Exports / packaging intermediates
+*.tmp
+.DS_Store
+Thumbs.db
