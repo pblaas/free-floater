@@ -62,6 +62,7 @@ var _powerup_times := {}
 var _aura: OmniLight3D
 var _aura_color := Color(0.0, 0.0, 0.0)
 var _land_fx: GPUParticles3D
+var _buzzer: AudioStreamPlayer
 
 
 func _ready() -> void:
@@ -69,6 +70,7 @@ func _ready() -> void:
 	_setup_hud()
 	_setup_aura()
 	_setup_landing_fx()
+	_setup_buzzer()
 	respawn()
 
 
@@ -503,6 +505,14 @@ func _setup_landing_fx() -> void:
 	add_child(_land_fx)
 
 
+func _setup_buzzer() -> void:
+	_buzzer = AudioStreamPlayer.new()
+	_buzzer.name = "PowerUpBuzzer"
+	_buzzer.stream = load("res://assets/audio/powerup_buzzer.ogg")
+	_buzzer.volume_db = -6.0
+	add_child(_buzzer)
+
+
 func _update_powerups(delta: float) -> void:
 	for kind in _powerup_times.keys():
 		_powerup_times[kind] = float(_powerup_times[kind]) - delta
@@ -530,6 +540,8 @@ func _activate_powerup(kind: String) -> void:
 	_aura_color = color if _aura_color.is_equal_approx(Color(0.0, 0.0, 0.0)) else _aura_color.lerp(color, 0.5)
 	var label := "Anti-Gravity" if kind == PowerUp.LOWGRAV else "Turbo Swing"
 	_flash_hint("POWER UP — %s" % label)
+	if _buzzer != null and _buzzer.stream != null:
+		_buzzer.play()
 	_pulse_haptic(right_controller, 0.6)
 
 
