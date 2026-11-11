@@ -32,7 +32,7 @@ const WEB_PULL_SPEED := 6.0
 const WEB_PULL_ACCEL := 6.0
 const GRIP_REEL_SPEED := 8.0
 const MIN_ROPE := 1.2
-const CORD_RADIUS := 0.012
+const CORD_RADIUS := 0.016
 const AIM_DOT_RADIUS := 0.062
 const HAND_TILT_DEGREES := 72.0
 const POWERUP_DURATION := 20.0
@@ -208,6 +208,8 @@ func _make_web(hand: XRController3D, color: Color, is_left: bool) -> Dictionary:
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.albedo_color = color
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	cord.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	cord.material_override = mat
 	cord.visible = false
 	var parent := get_parent()
