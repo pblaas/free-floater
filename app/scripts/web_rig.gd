@@ -41,6 +41,13 @@ const LOWGRAV_GRAVITY_SCALE := 0.65
 const TURBO_SPEED_SCALE := 1.6
 const TURBO_REEL_SCALE := 1.5
 const HUD_FADE_SECONDS := 12.0
+const MIN_SWING_SECONDS := 0.3
+const SWING_BASE_POINTS := 25.0
+const SPEED_POINT_SCALE := 2.0
+const CHAIN_MULT_STEP := 0.1
+const CHAIN_BANK_BONUS := 50
+const MASK_VIGNETTE_SIZE := 3.0
+const MASK_VIGNETTE_DEPTH := 1.1
 
 @export var spawn_point := Vector3(0.0, 30.0, 0.0)
 
@@ -64,6 +71,13 @@ var _aura_color := Color(0.0, 0.0, 0.0)
 var _land_fx: GPUParticles3D
 var _buzzer: AudioStreamPlayer
 var _music: AudioStreamPlayer
+var _score := 0
+var _chain := 0
+var _best_chain := 0
+var _chain_pulse := 0.0
+var _score_label: Label3D
+var _chain_label: Label3D
+var _mask_mat: ShaderMaterial
 
 
 func _ready() -> void:
@@ -73,6 +87,7 @@ func _ready() -> void:
 	_setup_landing_fx()
 	_setup_buzzer()
 	_setup_music()
+	_setup_mask_hud()
 	respawn()
 
 
@@ -250,6 +265,56 @@ func _setup_hud() -> void:
 	_status.no_depth_test = true
 	camera.add_child(_status)
 
+	var caption := Label3D.new()
+	caption.name = "ScoreCaption"
+	caption.position = Vector3(0.0, 0.345, -0.9)
+	caption.pixel_size = 0.001
+	caption.font_size = 16
+	caption.modulate = Color(0.98, 0.82, 0.84)
+	caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	caption.no_depth_test = true
+	caption.text = "SWING SCORE"
+	camera.add_child(caption)
+
+	_score_label = Label3D.new()
+	_score_label.name = "Score"
+	_score_label.position = Vector3(0.0, 0.255, -0.9)
+	_score_label.pixel_size = 0.001
+	_score_label.font_size = 54
+	_score_label.modulate = Color(1.0, 0.97, 0.92)
+	_score_label.outline_size = 10
+	_score_label.outline_modulate = Color(0.42, 0.05, 0.09)
+	_score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_score_label.no_depth_test = true
+	_score_label.text = "0"
+	camera.add_child(_score_label)
+
+	_chain_label = Label3D.new()
+	_chain_label.name = "SwingChain"
+	_chain_label.position = Vector3(0.0, -0.28, -0.9)
+	_chain_label.pixel_size = 0.001
+	_chain_label.font_size = 40
+	_chain_label.modulate = Color(1.0, 0.85, 0.3)
+	_chain_label.outline_size = 8
+	_chain_label.outline_modulate = Color(0.25, 0.12, 0.02)
+	_chain_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_chain_label.no_depth_test = true
+	_chain_label.visible = false
+	camera.add_child(_chain_label)
+
+
+func _setup_mask_hud() -> void:
+	var mask := MeshInstance3D.new()
+	mask.name = "MaskVignette"
+	var quad := QuadMesh.new()
+	quad.size = Vector2(MASK_VIGNETTE_SIZE, MASK_VIGNETTE_SIZE)
+	mask.mesh = quad
+	_mask_mat = ShaderMaterial.new()
+	_mask_mat.shader = load("res://assets/shaders/mask_vignette.gdshader")
+	mask.material_override = _mask_mat
+	mask.position = Vector3(0.0, 0.0, -MASK_VIGNETTE_DEPTH)
+	camera.add_child(mask)
+
 
 func _update_web_inputs() -> void:
 	_update_web_input(_webs["L"], "L")
@@ -285,6 +350,7 @@ func _try_attach(web: Dictionary, side: String) -> void:
 		return
 	web["attached"] = true
 	web["anchor"] = hit["position"] as Vector3
+	web["attach_time"] = float(Time.get_ticks_msec()) * 0.001
 	var head := camera.global_position
 	web["rope_length"] = maxf(head.distance_to(hit["position"] as Vector3), MIN_ROPE)
 	_pulse_haptic(hand, 0.8)
@@ -294,13 +360,46 @@ func _try_attach(web: Dictionary, side: String) -> void:
 func _detach(web: Dictionary, side: String) -> void:
 	if not bool(web["attached"]):
 		return
+	var held_for := float(Time.get_ticks_msec()) * 0.001 - float(web.get("attach_time", -1.0e9))
 	web["attached"] = false
 	var cord := web["cord"] as MeshInstance3D
 	if cord != null:
 		cord.visible = false
 	var hand := web["hand"] as XRController3D
 	_pulse_haptic(hand, 0.3)
+	if held_for >= MIN_SWING_SECONDS:
+		_register_swing(_velocity.length())
 	web_detached.emit(side, _velocity)
+
+
+func _register_swing(speed: float) -> void:
+	_chain += 1
+	_best_chain = maxi(_best_chain, _chain)
+	var points := int(roundf((SWING_BASE_POINTS + speed * SPEED_POINT_SCALE) * _chain_multiplier()))
+	_score += points
+	_chain_pulse = 1.0
+	if _chain_label != null:
+		_chain_label.text = "×%d SWING CHAIN  ·  ×%.1f" % [_chain, _chain_multiplier()]
+		_chain_label.visible = true
+
+
+func _chain_multiplier() -> float:
+	return 1.0 + CHAIN_MULT_STEP * float(_chain)
+
+
+func _bank_chain() -> void:
+	if _chain >= 3:
+		var bonus := CHAIN_BANK_BONUS * _chain
+		_score += bonus
+		_flash_hint("SWING CHAIN ×%d banked  ·  +%d" % [_chain, bonus])
+	_reset_chain()
+
+
+func _reset_chain() -> void:
+	_chain = 0
+	_chain_pulse = 0.0
+	if _chain_label != null:
+		_chain_label.visible = false
 
 
 func _update_locomotion(delta: float) -> void:
@@ -329,6 +428,7 @@ func _update_locomotion(delta: float) -> void:
 		if global_position.y < 0.0:
 			global_position.y = 0.0
 			_velocity.y = 0.0
+			_bank_chain()
 
 
 func _surface_y_below() -> float:
@@ -359,6 +459,7 @@ func _land_on_surface(prev_y: float) -> void:
 		return
 	global_position.y = surface_y
 	_velocity.y = 0.0
+	_bank_chain()
 	if _land_fx != null:
 		_land_fx.global_position = global_position + Vector3(0.0, 0.1, 0.0)
 		_land_fx.restart()
@@ -516,7 +617,7 @@ func _setup_buzzer() -> void:
 
 
 func _setup_music() -> void:
-	var stream: AudioStreamMP3 = load("res://assets/audio/twist_the_truth.mp3")
+	var stream: AudioStreamMP3 = load("res://assets/audio/freefloat.mp3")
 	if stream == null:
 		return
 	stream.loop = true
@@ -671,6 +772,7 @@ func respawn() -> void:
 		_detach(_webs[side], side)
 	_velocity = Vector3.ZERO
 	global_position = spawn_point
+	_reset_chain()
 
 
 func _update_hud(delta: float) -> void:
@@ -678,6 +780,14 @@ func _update_hud(delta: float) -> void:
 		_hud_time -= delta
 		if _hud_time <= 0.0:
 			_hint.visible = false
+	if _score_label != null:
+		_score_label.text = _format_score(_score)
+	if _chain_pulse > 0.0:
+		_chain_pulse = maxf(0.0, _chain_pulse - delta * 2.5)
+		var scale := 1.0 + 0.35 * _chain_pulse
+		_chain_label.scale = Vector3(scale, scale, scale)
+	if _mask_mat != null:
+		_mask_mat.set_shader_parameter("pulse", _chain_pulse)
 	var sides := ""
 	if bool(_webs["L"]["attached"]):
 		sides += "L "
@@ -699,9 +809,20 @@ func _update_hud(delta: float) -> void:
 
 
 func _flash_hint(text: String) -> void:
+	if _hint == null:
+		return
 	_hint.text = text
 	_hint.visible = true
 	_hud_time = 1.5
+
+
+func _format_score(value: int) -> String:
+	var digits := str(value)
+	var grouped := ""
+	while digits.length() > 3:
+		grouped = "," + digits.substr(digits.length() - 3, 3) + grouped
+		digits = digits.substr(0, digits.length() - 3)
+	return digits + grouped
 
 
 func _grip_held() -> bool:

@@ -12,6 +12,7 @@ func _init() -> void:
 	_test_rope_math()
 	_test_city_generation()
 	_test_web_rig_scene()
+	_test_scoring()
 	_test_main_scene()
 	_test_build_version()
 	if failures == 0:
@@ -109,6 +110,37 @@ func _test_web_rig_scene() -> void:
 	check(rig._velocity.length_squared() < 0.000001, "starts at rest")
 	rig_scene.queue_free()
 	await process_frame
+
+
+func _test_scoring() -> void:
+	print("scoring + swing chain")
+	check(WebRigScript.SWING_BASE_POINTS > 0.0, "swing base points configured")
+	check(WebRigScript.CHAIN_MULT_STEP > 0.0, "chain multiplier step configured")
+	check(WebRigScript.MIN_SWING_SECONDS > 0.0, "minimum swing duration configured")
+	var score := WebRigScript.new()
+	check(score._format_score(1234567) == "1,234,567", "score formatting groups digits")
+	check(score._format_score(0) == "0", "zero score formats plain")
+	check(score._chain_multiplier() == 1.0, "multiplier starts at ×1")
+	score._chain = 10
+	check(score._chain_multiplier() == 2.0, "multiplier doubles after 10 swings")
+	score._chain = 0
+	score._register_swing(10.0)
+	check(score._chain == 1, "swing increments chain")
+	check(score._score > 0, "swing awards points")
+	check(score._best_chain == 1, "best chain tracked")
+	score._bank_chain()
+	check(score._chain == 0, "landing banks and resets chain")
+	score._register_swing(5.0)
+	score._register_swing(5.0)
+	score._register_swing(5.0)
+	check(score._chain == 3, "three swings build a chain")
+	var before_bonus := score._score
+	score._bank_chain()
+	check(
+		score._score == before_bonus + WebRigScript.CHAIN_BANK_BONUS * 3,
+		"bank bonus awarded for chain >= 3"
+	)
+	score.free()
 
 
 func _test_main_scene() -> void:
