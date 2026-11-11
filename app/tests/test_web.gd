@@ -108,6 +108,11 @@ func _test_web_rig_scene() -> void:
 	var cord := left_web["cord"] as MeshInstance3D
 	check(cord != null and not cord.visible, "L cord hidden before attach")
 	check(rig._velocity.length_squared() < 0.000001, "starts at rest")
+	check(WebRigScript.MUSIC_TRACKS.size() >= 5, "music playlist has multiple tracks")
+	check(rig._playlist.size() == WebRigScript.MUSIC_TRACKS.size(), "playlist covers every track")
+	check(rig._track_index == 0, "playlist starts on first track")
+	check(rig._music != null and rig._music.stream != null, "background music loaded")
+	check(rig._music.stream.loop == false, "playlist tracks advance instead of looping")
 	rig_scene.queue_free()
 	await process_frame
 

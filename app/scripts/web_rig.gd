@@ -33,7 +33,7 @@ const WEB_PULL_ACCEL := 6.0
 const GRIP_REEL_SPEED := 8.0
 const MIN_ROPE := 1.2
 const CORD_RADIUS := 0.012
-const AIM_DOT_RADIUS := 0.05
+const AIM_DOT_RADIUS := 0.062
 const HAND_TILT_DEGREES := 72.0
 const POWERUP_DURATION := 20.0
 const POWERUP_COLLECT_RADIUS := 1.3
@@ -48,6 +48,17 @@ const CHAIN_MULT_STEP := 0.1
 const CHAIN_BANK_BONUS := 50
 const MASK_VIGNETTE_SIZE := 3.0
 const MASK_VIGNETTE_DEPTH := 1.1
+const MUSIC_TRACKS := [
+	{"path": "res://assets/audio/freefloat.mp3", "title": "Free Float"},
+	{"path": "res://assets/audio/freefloat-1.mp3", "title": "City Heartbeat"},
+	{"path": "res://assets/audio/freefloat-2.mp3", "title": "Canyon of Glass"},
+	{"path": "res://assets/audio/freefloat-3.mp3", "title": "We Swing"},
+	{"path": "res://assets/audio/freefloat-4.mp3", "title": "The Long Way Home"},
+	{"path": "res://assets/audio/freefloat-5.mp3", "title": "Watcher of the Skyline"},
+]
+const MUSIC_VOLUME_DB := -10.0
+const MUSIC_FADE_SECONDS := 2.0
+const MUSIC_TITLE_SECONDS := 5.0
 
 @export var spawn_point := Vector3(0.0, 30.0, 0.0)
 
@@ -78,6 +89,10 @@ var _chain_pulse := 0.0
 var _score_label: Label3D
 var _chain_label: Label3D
 var _mask_mat: ShaderMaterial
+var _playlist: Array = []
+var _track_index := -1
+var _now_playing_time := 0.0
+var _now_playing: Label3D
 
 
 func _ready() -> void:
@@ -119,8 +134,8 @@ static func solve_rope(
 
 
 func _setup_webs() -> void:
-	_webs["L"] = _make_web(left_controller, Color(1.0, 1.0, 1.0), true)
-	_webs["R"] = _make_web(right_controller, Color(0.85, 0.95, 1.0), false)
+	_webs["L"] = _make_web(left_controller, Color(1.0, 0.3, 0.24), true)
+	_webs["R"] = _make_web(right_controller, Color(0.24, 0.62, 1.0), false)
 
 
 func _make_web(hand: XRController3D, color: Color, is_left: bool) -> Dictionary:
@@ -152,7 +167,7 @@ func _make_web(hand: XRController3D, color: Color, is_left: bool) -> Dictionary:
 	var dot_mat := StandardMaterial3D.new()
 	dot_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	dot_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	dot_mat.albedo_color = Color(color.r, color.g, color.b, 0.4)
+	dot_mat.albedo_color = Color(color.r, color.g, color.b, 0.8)
 	dot.material_override = dot_mat
 	dot.visible = false
 	if parent != null:
@@ -617,16 +632,57 @@ func _setup_buzzer() -> void:
 
 
 func _setup_music() -> void:
-	var stream: AudioStreamMP3 = load("res://assets/audio/freefloat.mp3")
-	if stream == null:
-		return
-	stream.loop = true
 	_music = AudioStreamPlayer.new()
 	_music.name = "BackgroundMusic"
-	_music.stream = stream
-	_music.volume_db = -10.0
+	_music.volume_db = MUSIC_VOLUME_DB
 	add_child(_music)
+	_music.finished.connect(_play_next_track)
+	_playlist = range(MUSIC_TRACKS.size())
+	_playlist.shuffle()
+	_now_playing = Label3D.new()
+	_now_playing.name = "NowPlaying"
+	_now_playing.position = Vector3(0.0, 0.155, -0.9)
+	_now_playing.pixel_size = 0.001
+	_now_playing.font_size = 15
+	_now_playing.modulate = Color(0.72, 0.8, 0.92, 0.9)
+	_now_playing.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_now_playing.no_depth_test = true
+	_now_playing.text = ""
+	camera.add_child(_now_playing)
+	_play_track(0)
+
+
+func _play_track(index: int) -> void:
+	_track_index = index
+	var info: Dictionary = MUSIC_TRACKS[int(_playlist[index])]
+	var stream: AudioStreamMP3 = load(info["path"])
+	if stream == null:
+		_play_next_track()
+		return
+	stream.loop = false
+	_music.stream = stream
+	_music.volume_db = MUSIC_VOLUME_DB - 20.0
 	_music.play()
+	var tween := create_tween()
+	tween.tween_property(_music, "volume_db", MUSIC_VOLUME_DB, MUSIC_FADE_SECONDS)
+	_now_playing_time = MUSIC_TITLE_SECONDS
+	_update_now_playing_label()
+
+
+func _play_next_track() -> void:
+	if MUSIC_TRACKS.is_empty():
+		return
+	_play_track((_track_index + 1) % MUSIC_TRACKS.size())
+
+
+func _update_now_playing_label() -> void:
+	if _now_playing == null:
+		return
+	var info: Dictionary = MUSIC_TRACKS[int(_playlist[_track_index])]
+	if _now_playing_time > 0.0:
+		_now_playing.text = "♪ %d/%d · %s" % [_track_index + 1, MUSIC_TRACKS.size(), info["title"]]
+	else:
+		_now_playing.text = "♪ %d/%d" % [_track_index + 1, MUSIC_TRACKS.size()]
 
 
 func _update_powerups(delta: float) -> void:
@@ -786,6 +842,9 @@ func _update_hud(delta: float) -> void:
 		_chain_pulse = maxf(0.0, _chain_pulse - delta * 2.5)
 		var scale := 1.0 + 0.35 * _chain_pulse
 		_chain_label.scale = Vector3(scale, scale, scale)
+	if _now_playing_time > 0.0:
+		_now_playing_time -= delta
+		_update_now_playing_label()
 	if _mask_mat != null:
 		_mask_mat.set_shader_parameter("pulse", _chain_pulse)
 	var sides := ""
