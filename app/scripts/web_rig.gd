@@ -63,6 +63,7 @@ var _aura: OmniLight3D
 var _aura_color := Color(0.0, 0.0, 0.0)
 var _land_fx: GPUParticles3D
 var _buzzer: AudioStreamPlayer
+var _music: AudioStreamPlayer
 
 
 func _ready() -> void:
@@ -71,6 +72,7 @@ func _ready() -> void:
 	_setup_aura()
 	_setup_landing_fx()
 	_setup_buzzer()
+	_setup_music()
 	respawn()
 
 
@@ -511,6 +513,19 @@ func _setup_buzzer() -> void:
 	_buzzer.stream = load("res://assets/audio/powerup_buzzer.ogg")
 	_buzzer.volume_db = -6.0
 	add_child(_buzzer)
+
+
+func _setup_music() -> void:
+	var stream: AudioStreamMP3 = load("res://assets/audio/twist_the_truth.mp3")
+	if stream == null:
+		return
+	stream.loop = true
+	_music = AudioStreamPlayer.new()
+	_music.name = "BackgroundMusic"
+	_music.stream = stream
+	_music.volume_db = -10.0
+	add_child(_music)
+	_music.play()
 
 
 func _update_powerups(delta: float) -> void:
