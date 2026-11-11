@@ -59,6 +59,11 @@ const MUSIC_TRACKS := [
 const MUSIC_VOLUME_DB := -10.0
 const MUSIC_FADE_SECONDS := 2.0
 const MUSIC_TITLE_SECONDS := 5.0
+const WIND_MIN_DB := -42.0
+const WIND_MAX_DB := -5.0
+const WIND_SMOOTH := 3.0
+const THUD_MIN_IMPACT := 2.0
+const CORD_SEGMENTS := 14
 
 @export var spawn_point := Vector3(0.0, 30.0, 0.0)
 
@@ -93,6 +98,8 @@ var _playlist: Array = []
 var _track_index := -1
 var _now_playing_time := 0.0
 var _now_playing: Label3D
+var _thud: AudioStreamPlayer
+var _wind: AudioStreamPlayer
 
 
 func _ready() -> void:
@@ -102,6 +109,8 @@ func _ready() -> void:
 	_setup_landing_fx()
 	_setup_buzzer()
 	_setup_music()
+	_setup_thud()
+	_setup_wind()
 	_setup_mask_hud()
 	respawn()
 
@@ -111,7 +120,60 @@ func _process(delta: float) -> void:
 	_update_locomotion(delta)
 	_update_powerups(delta)
 	_update_cords()
+	_update_wind(delta)
 	_update_hud(delta)
+
+
+func _setup_thud() -> void:
+	_thud = AudioStreamPlayer.new()
+	_thud.name = "LandingThud"
+	_thud.stream = load("res://assets/audio/thud.wav")
+	_thud.volume_db = -60.0
+	add_child(_thud)
+
+
+func _setup_wind() -> void:
+	_wind = AudioStreamPlayer.new()
+	_wind.name = "WindLoop"
+	var stream := load("res://assets/audio/wind.wav") as AudioStreamWAV
+	if stream != null:
+		stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		stream.loop_begin = 0
+		stream.loop_end = int(stream.data.size() / 2)
+	_wind.stream = stream
+	_wind.volume_db = WIND_MIN_DB
+	add_child(_wind)
+	if _wind.stream != null:
+		_wind.play()
+
+
+func _play_thud(impact: float) -> void:
+	if _thud == null or _thud.stream == null or impact < THUD_MIN_IMPACT:
+		return
+	var strength := clampf(impact / MAX_SPEED, 0.0, 1.0)
+	_thud.volume_db = linear_to_db(clampf(0.15 + strength * 0.85, 0.05, 1.0)) - 6.0
+	_thud.pitch_scale = randf_range(0.9, 1.1)
+	_thud.play()
+
+
+func _update_wind(delta: float) -> void:
+	if _wind == null or _wind.stream == null:
+		return
+	var speed := _velocity.length()
+	var ratio := clampf(speed / _max_speed(), 0.0, 1.0)
+	var target := lerpf(WIND_MIN_DB, WIND_MAX_DB, ratio)
+	var decay := 1.0 - exp(-WIND_SMOOTH * delta)
+	_wind.volume_db = lerpf(_wind.volume_db, target, decay)
+	_wind.pitch_scale = lerpf(_wind.pitch_scale, 0.85 + 0.35 * ratio, decay)
+
+
+func _duck_music() -> void:
+	if _music == null or _music.stream == null:
+		return
+	var tween := create_tween()
+	tween.tween_property(_music, "volume_db", MUSIC_VOLUME_DB - 10.0, 0.15)
+	tween.tween_interval(1.1)
+	tween.tween_property(_music, "volume_db", MUSIC_VOLUME_DB, 1.2)
 
 
 static func solve_rope(
@@ -142,12 +204,7 @@ func _make_web(hand: XRController3D, color: Color, is_left: bool) -> Dictionary:
 	var hand_mesh := _make_hand_mesh(hand, color, is_left)
 	var cord := MeshInstance3D.new()
 	cord.name = "Cord_%s" % String(hand.name)
-	var mesh := CylinderMesh.new()
-	mesh.height = 1.0
-	mesh.top_radius = CORD_RADIUS
-	mesh.bottom_radius = CORD_RADIUS
-	mesh.radial_segments = 6
-	cord.mesh = mesh
+	cord.mesh = ImmediateMesh.new()
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.albedo_color = color
@@ -472,9 +529,11 @@ func _land_on_surface(prev_y: float) -> void:
 		return
 	if feet.y >= surface_y:
 		return
+	var impact := -_velocity.y
 	global_position.y = surface_y
 	_velocity.y = 0.0
 	_bank_chain()
+	_play_thud(impact)
 	if _land_fx != null:
 		_land_fx.global_position = global_position + Vector3(0.0, 0.1, 0.0)
 		_land_fx.restart()
@@ -714,6 +773,7 @@ func _activate_powerup(kind: String) -> void:
 	_flash_hint("POWER UP — %s" % label)
 	if _buzzer != null and _buzzer.stream != null:
 		_buzzer.play()
+		_duck_music()
 	_pulse_haptic(right_controller, 0.6)
 
 
@@ -817,10 +877,38 @@ func _update_cord(web: Dictionary) -> void:
 		mat.albedo_color = base * (1.0 + 0.3 * sin(pulse))
 	else:
 		mat.albedo_color = base
-	cord.global_position = (from + anchor) * 0.5
-	cord.look_at(anchor, Vector3.UP)
-	cord.rotate_object_local(Vector3.RIGHT, PI * 0.5)
-	cord.scale = Vector3(1.0, length, 1.0)
+	var mesh := cord.mesh as ImmediateMesh
+	mesh.clear_surfaces()
+	var slack := maxf(float(web["rope_length"]) - length, 0.0)
+	var sag := clampf(slack * 0.55, 0.015, 1.4)
+	var mid := (from + anchor) * 0.5 - Vector3.UP * sag
+	var cam_pos := camera.global_position
+	mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
+	for i in CORD_SEGMENTS + 1:
+		var t := float(i) / float(CORD_SEGMENTS)
+		var p := from.lerp(mid, t).lerp(mid.lerp(anchor, t), t)
+		var tangent := _bezier_tangent(from, mid, anchor, t, length)
+		var view := (p - cam_pos).normalized()
+		var side := tangent.cross(view)
+		if side.length_squared() < 0.000001:
+			side = tangent.cross(Vector3.UP)
+		if side.length_squared() < 0.000001:
+			side = tangent.cross(Vector3.RIGHT)
+		side = side.normalized() * CORD_RADIUS
+		mesh.surface_add_vertex(p + side)
+		mesh.surface_add_vertex(p - side)
+	mesh.surface_end()
+
+
+func _bezier_tangent(p0: Vector3, p1: Vector3, p2: Vector3, t: float, total: float) -> Vector3:
+	var t0 := maxf(t - 0.02, 0.0)
+	var t1 := minf(t + 0.02, 1.0)
+	var a := p0.lerp(p1, t0).lerp(p1.lerp(p2, t0), t0)
+	var b := p0.lerp(p1, t1).lerp(p1.lerp(p2, t1), t1)
+	var tangent := b - a
+	if tangent.length_squared() < 0.000001:
+		tangent = p2 - p0
+	return tangent / maxf(total, 0.001)
 
 
 func respawn() -> void:

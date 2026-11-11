@@ -79,6 +79,22 @@ func _test_city_generation() -> void:
 		if body != null and body.collision_layer == 2:
 			webbable += 1
 	check(webbable == city.building_count, "every building is webbable (layer 2)")
+	check(city.landmark_count == 4, "city has 4 landmark towers (%d)" % city.landmark_count)
+	var landmarks := 0
+	for building in city.get_node("Buildings").get_children():
+		if building.is_in_group("landmarks"):
+			landmarks += 1
+	check(landmarks == city.landmark_count, "landmarks tagged in group (%d)" % landmarks)
+	for landmark in city.get_tree().get_nodes_in_group("landmarks"):
+		check(
+			landmark.get_node_or_null("Beacon") != null
+			and landmark.get_node_or_null("BeaconLight") != null,
+			"%s has a lit beacon" % landmark.name
+		)
+		check(
+			(landmark.get_node("Body/Shape").shape as BoxShape3D).size.y >= 38.0,
+			"%s is taller than normal buildings" % landmark.name
+		)
 	var ground := city.get_node_or_null("Ground") as StaticBody3D
 	check(ground != null and ground.collision_layer == 1, "ground is walkable (layer 1)")
 	var sun := city.get_node_or_null("Sun")
@@ -107,6 +123,17 @@ func _test_web_rig_scene() -> void:
 	check(left_web["hand"] == rig.left_controller, "L web bound to left controller")
 	var cord := left_web["cord"] as MeshInstance3D
 	check(cord != null and not cord.visible, "L cord hidden before attach")
+	check(cord.mesh is ImmediateMesh, "cord uses dynamic sagging mesh")
+	check(cord.material_override.albedo_color == Color(1.0, 0.3, 0.24), "L cord uses distinct side color")
+	var right_web: Dictionary = webs["R"]
+	check(
+		(right_web["cord"] as MeshInstance3D).material_override.albedo_color == Color(0.24, 0.62, 1.0),
+		"R cord uses distinct side color"
+	)
+	check(rig.get_node_or_null("LandingThud") != null, "landing thud player exists")
+	var wind := rig.get_node_or_null("WindLoop") as AudioStreamPlayer
+	check(wind != null and wind.stream != null, "wind loop player exists")
+	check(wind.stream.loop_mode == AudioStreamWAV.LOOP_FORWARD, "wind loop is seamless")
 	check(rig._velocity.length_squared() < 0.000001, "starts at rest")
 	check(WebRigScript.MUSIC_TRACKS.size() >= 5, "music playlist has multiple tracks")
 	check(rig._playlist.size() == WebRigScript.MUSIC_TRACKS.size(), "playlist covers every track")

@@ -18,11 +18,21 @@ const WINDOW_COLS := 8
 const WINDOW_ROWS := 24
 const POWERUP_COUNT := 14
 const AIR_POWERUP_COUNT := 8
+const LANDMARK_COLORS := [
+	Color(0.82, 0.62, 0.22),
+	Color(0.18, 0.62, 0.58),
+	Color(0.72, 0.24, 0.34),
+	Color(0.28, 0.3, 0.72),
+]
+const LANDMARK_MIN_HEIGHT := 38.0
+const LANDMARK_MAX_HEIGHT := 52.0
+const BEACON_RANGE := 34.0
 
 @export var build_roof_hud := true
 
 var spawn_point := Vector3(0.0, 30.0, 0.0)
 var building_count := 0
+var landmark_count := 0
 
 var _rng := RandomNumberGenerator.new()
 var _textures: Array[ImageTexture] = []
@@ -64,7 +74,7 @@ func _build_materials() -> void:
 	_tank_mat.roughness = 0.8
 
 
-func _make_facade_texture(base: Color) -> ImageTexture:
+func _make_facade_texture(base: Color, lit_chance := 0.35) -> ImageTexture:
 	var img := Image.create(FACADE_W, FACADE_H, false, Image.FORMAT_RGB8)
 	img.fill(base)
 	for i in 3000:
@@ -82,7 +92,7 @@ func _make_facade_texture(base: Color) -> ImageTexture:
 			var y0 := int(margin_top + row * cell_h + cell_h * 0.24)
 			var w := int(cell_w * 0.56)
 			var h := int(cell_h * 0.52)
-			var lit := _rng.randf() < 0.35
+			var lit := _rng.randf() < lit_chance
 			var win := Color(1.0, 0.85, 0.55) if lit else Color(0.09, 0.11, 0.15)
 			img.fill_rect(Rect2i(x0, y0, w, h), win)
 	img.generate_mipmaps()
@@ -124,8 +134,17 @@ func _build_buildings() -> void:
 	var center := Vector3.ZERO
 	var spawn_building: Node3D = null
 
+	var landmark_slots := {
+		Vector2i(2, 3): true,
+		Vector2i(12, 4): true,
+		Vector2i(3, 12): true,
+		Vector2i(11, 12): true,
+	}
+
 	for gx in GRID_SIZE:
 		for gz in GRID_SIZE:
+			if landmark_slots.has(Vector2i(gx, gz)):
+				continue
 			var pos := Vector3(
 				(gx - half) * SPACING + _rng.randf_range(-1.5, 1.5),
 				0.0,
@@ -151,6 +170,29 @@ func _build_buildings() -> void:
 			})
 			if dist_to_center < SPACING:
 				spawn_building = building
+
+	for i in landmark_slots.size():
+		var slot: Vector2i = landmark_slots.keys()[i]
+		var pos := Vector3(
+			(float(slot.x) - half) * SPACING,
+			0.0,
+			(float(slot.y) - half) * SPACING
+		)
+		var height := _rng.randf_range(LANDMARK_MIN_HEIGHT, LANDMARK_MAX_HEIGHT)
+		var width := _rng.randf_range(12.0, 15.0)
+		var depth := _rng.randf_range(12.0, 15.0)
+		var color: Color = LANDMARK_COLORS[i % LANDMARK_COLORS.size()]
+		var tower := _make_landmark(pos, width, depth, height, color)
+		root.add_child(tower)
+		building_count += 1
+		landmark_count += 1
+		roof_spots.append(pos + Vector3(0.0, height + 0.5, 0.0))
+		_building_boxes.append({
+			"pos": pos,
+			"w": width,
+			"d": depth,
+			"h": height,
+		})
 
 	if spawn_building == null and building_count > 0:
 		spawn_building = root.get_child(0)
@@ -216,6 +258,59 @@ func _make_building(pos: Vector3, width: float, depth: float, height: float) -> 
 		marker_mat.albedo_color = Color(0.95, 0.55, 0.1)
 		roof.material_override = marker_mat
 		building.add_child(roof)
+
+	return building
+
+
+func _make_landmark(pos: Vector3, width: float, depth: float, height: float, color: Color) -> Node3D:
+	var building := _make_building(pos, width, depth, height)
+	building.name = "Landmark%02d" % landmark_count
+	building.add_to_group("landmarks")
+
+	var facade := building.get_node("Mesh") as MeshInstance3D
+	var mat := facade.material_override as StandardMaterial3D
+	mat.albedo_texture = _make_facade_texture(color.lightened(0.3), 0.85)
+	mat.albedo_color = Color(1.0, 1.0, 1.0)
+	mat.emission_enabled = true
+	mat.emission = color * 0.25
+	mat.emission_energy_multiplier = 0.6
+
+	var antenna := MeshInstance3D.new()
+	antenna.name = "Antenna"
+	var antenna_mesh := CylinderMesh.new()
+	antenna_mesh.top_radius = 0.08
+	antenna_mesh.bottom_radius = 0.16
+	antenna_mesh.height = 5.0
+	antenna.mesh = antenna_mesh
+	var antenna_mat := StandardMaterial3D.new()
+	antenna_mat.albedo_color = Color(0.75, 0.76, 0.8)
+	antenna_mat.metallic = 0.6
+	antenna_mat.roughness = 0.35
+	antenna.material_override = antenna_mat
+	antenna.position = Vector3(0.0, height + 0.5 + 2.5, 0.0)
+	building.add_child(antenna)
+
+	var beacon_pos := Vector3(0.0, height + 0.5 + 5.3, 0.0)
+	var beacon := MeshInstance3D.new()
+	beacon.name = "Beacon"
+	var beacon_mesh := SphereMesh.new()
+	beacon_mesh.radius = 0.45
+	beacon_mesh.height = 0.9
+	beacon.mesh = beacon_mesh
+	var beacon_mat := StandardMaterial3D.new()
+	beacon_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	beacon_mat.albedo_color = color.lightened(0.35)
+	beacon.material_override = beacon_mat
+	beacon.position = beacon_pos
+	building.add_child(beacon)
+
+	var light := OmniLight3D.new()
+	light.name = "BeaconLight"
+	light.light_color = color.lightened(0.3)
+	light.light_energy = 2.5
+	light.omni_range = BEACON_RANGE
+	light.position = beacon_pos
+	building.add_child(light)
 
 	return building
 
