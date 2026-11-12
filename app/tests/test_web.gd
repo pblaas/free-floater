@@ -13,6 +13,7 @@ func _init() -> void:
 	_test_city_generation()
 	_test_web_rig_scene()
 	_test_scoring()
+	_test_day_night()
 	_test_main_scene()
 	_test_build_version()
 	if failures == 0:
@@ -85,7 +86,9 @@ func _test_city_generation() -> void:
 		if building.is_in_group("landmarks"):
 			landmarks += 1
 	check(landmarks == city.landmark_count, "landmarks tagged in group (%d)" % landmarks)
-	for landmark in city.get_tree().get_nodes_in_group("landmarks"):
+	for landmark in city.get_node("Buildings").get_children():
+		if not landmark.is_in_group("landmarks"):
+			continue
 		check(
 			landmark.get_node_or_null("Beacon") != null
 			and landmark.get_node_or_null("BeaconLight") != null,
@@ -173,6 +176,107 @@ func _test_scoring() -> void:
 		"bank bonus awarded for chain >= 3"
 	)
 	score.free()
+
+
+func _test_day_night() -> void:
+	print("day/night switch")
+	var city: CityBuilderScript = CityBuilderScript.new()
+	city.name = "TestCityDN"
+	root.add_child(city)
+	await process_frame
+	check(city.is_night == false, "city starts in day mode")
+	var sw := city.get_node_or_null("DaySwitch")
+	check(sw != null, "day/night switch spawned")
+	if sw == null:
+		city.queue_free()
+		await process_frame
+		return
+	check(sw.has_method("activate"), "switch exposes activate()")
+	check(sw.is_night == false, "switch starts in day state")
+	check(sw.global_position.y > 30.0, "switch is up on a tall roof (y=%.1f)" % sw.global_position.y)
+	var landmark_roof := false
+	for box in city._building_boxes:
+		var pos: Vector3 = box["pos"]
+		if absf(sw.global_position.x - pos.x) <= float(box["w"]) * 0.5 \
+				and absf(sw.global_position.z - pos.z) <= float(box["d"]) * 0.5 \
+				and absf(sw.global_position.y - float(box["h"])) < 2.0 \
+				and float(box["h"]) >= 38.0:
+			landmark_roof = true
+	check(landmark_roof, "switch spawned on a colored landmark roof")
+	var body := sw.get_node_or_null("Body") as StaticBody3D
+	check(body != null and body.collision_layer == 8, "switch collider on interaction layer 8")
+	check(body.is_in_group("day_switch"), "switch collider discoverable by web raycast")
+	check(body.get_meta("switch_node") == sw, "collider links back to the switch")
+
+	var sun := city.get_node_or_null("Sun") as DirectionalLight3D
+	check(sun != null, "sun light exists for day/night swap")
+	var day_energy := sun.light_energy
+	var facade := city.get_node("Buildings").get_child(0).get_node("Mesh") as MeshInstance3D
+	var mat := facade.material_override as StandardMaterial3D
+	var day_albedo := mat.albedo_texture
+	check(not mat.emission_enabled, "day facades do not emit")
+
+	city.set_night(true)
+	check(city.is_night, "set_night(true) flips state")
+	check(sun.light_energy < day_energy * 0.4, "night dims the sun")
+	check(mat.emission_enabled, "night enables window emission on buildings")
+	check(mat.emission_texture != null, "night windows glow via emission mask")
+	check(mat.albedo_texture != day_albedo, "night swaps in darker facade albedo")
+
+	city.set_night(false)
+	check(not city.is_night and sun.light_energy == day_energy, "set_night(false) restores day")
+	check(not mat.emission_enabled, "day disables window emission again")
+	check(mat.albedo_texture == day_albedo, "day restores facade albedo")
+
+	sw.activate()
+	check(city.is_night, "switch activation toggles city to night")
+	check(sw.is_night, "switch state matches city after activation")
+	sw.activate()
+	check(not city.is_night, "switch activation toggles back to day")
+	check(sun.light_energy == day_energy, "sun restored after round trip")
+
+	var landmark: Node3D = null
+	for node in city.get_node("Buildings").get_children():
+		if node.is_in_group("landmarks"):
+			landmark = node
+			break
+	if landmark != null:
+		var lmat := (landmark.get_node("Mesh") as MeshInstance3D).material_override as StandardMaterial3D
+		var day_emission: Color = lmat.emission
+		city.set_night(true)
+		check(lmat.emission_enabled, "night keeps landmark emission on")
+		check((lmat.emission as Color) != day_emission, "night recolors landmark glow")
+		check((lmat.emission_energy_multiplier as float) > 1.0, "landmark windows glow brighter at night")
+		city.set_night(false)
+
+	var neon_sample: GeometryInstance3D = null
+	var neon_total := 0
+	for node in city.get_node("Buildings").get_children():
+		for sub in node.get_children():
+			if sub is GeometryInstance3D and String(sub.name).begins_with("Neon"):
+				neon_total += 1
+				if neon_sample == null:
+					neon_sample = sub
+	check(neon_total > 5, "neon trims/strips spawned on some buildings (%d)" % neon_total)
+	check(neon_sample != null and not neon_sample.visible, "neon hidden during day")
+	var neon_windows := 0
+	for entry in city._facade_mats:
+		var tint: Color = entry["neon"]
+		if tint.r + tint.g + tint.b > 0.5:
+			neon_windows += 1
+	check(neon_windows > 5, "buildings carry green/purple neon window tints (%d)" % neon_windows)
+	city.set_night(true)
+	check(neon_sample.visible, "neon glows at night")
+	var night_env: Environment = city.get_node("WorldEnv").environment
+	check(night_env.sky.sky_material is ShaderMaterial, "night swaps in starfield sky shader")
+	city.set_night(false)
+	check(not neon_sample.visible, "neon off again in day")
+	check(
+		city.get_node("WorldEnv").environment.sky.sky_material is ProceduralSkyMaterial,
+		"day restores procedural sky"
+	)
+	city.queue_free()
+	await process_frame
 
 
 func _test_main_scene() -> void:

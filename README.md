@@ -18,6 +18,13 @@ momentum as you swing from rooftop to rooftop.
   snap-turn on the ground, left **AX** to jump, right **AX** to respawn.
 - **Procedural city** — 200+ webbable buildings with generated facade
   textures, lit/dark windows, and roof caps you can land and walk on.
+- **Day/night switch** — a glowing lever spawns on one of the colored
+  landmark towers; aim at it and pull the trigger to toggle night mode:
+  the sky darkens into a starfield with a milky-way band, spiral galaxies
+  and shooting stars, and the building windows light up (landmark towers
+  glow in their own color). Pull again to switch back to day.
+- **Neon nights** — some buildings carry green/purple neon: glowing
+  roofline bands, vertical corner strips, and neon-tinted window glow.
 - **Visible hands** — low-poly gloved hands in the web-shoot pose on both
   controllers; cords fire from the palm.
 - **On-headset HUD** — status label (web sides, speed, reel indicator) and a
@@ -32,12 +39,14 @@ app/
   scripts/
     main.gd                Entry point (XR init, spawn wiring)
     web_rig.gd             XROrigin3D rig: web physics, locomotion, HUD
-    city_builder.gd        Procedural city, facades, lighting
+    city_builder.gd        Procedural city, facades, day/night lighting
+    day_switch.gd          Rooftop day/night lever (landmark towers)
     app_log.gd             On-device logging
     build_version.gd       Generated version stamp (do not edit)
   tests/
     test_web.gd            Headless test suite (rope math, scene, wiring)
-    screenshot_city.gd     Visual capture harness
+    screenshot_city.gd     Visual capture harness (day)
+    screenshot_night.gd    Visual capture harness (night)
   openxr_action_map.tres   Action map: triggers, grip, sticks, AX, D-pad, haptic
 tools/
   export.sh                Version stamp + headless ARM64 export
@@ -80,6 +89,7 @@ stamp and the in-VR version label read it.
 | Thumbstick | Walk (up/down) / snap-turn (left/right) |
 | Left AX | Jump |
 | Right AX | Respawn |
+| Trigger on roof lever | Toggle day / night |
 
 ## License
 

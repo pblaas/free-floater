@@ -24,6 +24,10 @@ const JUMP_UP := 6.0
 const JUMP_FORWARD := 3.5
 const WEB_REACH := 60.0
 const WEBBABLE_MASK := 2
+const SWITCH_MASK := 8
+const AIM_MASK := WEBBABLE_MASK | SWITCH_MASK
+const AIM_DOT_SWITCH_SCALE := 1.8
+const AIM_DOT_SWITCH_COLOR := Color(1.0, 0.85, 0.3, 0.95)
 const SURFACE_MASK := 3
 const SURFACE_PROBE_UP := 50.0
 const PLAYER_RADIUS := 0.45
@@ -324,7 +328,8 @@ func _setup_hud() -> void:
 		+ "Web pulls you to the anchor; GRIP reels faster\n"
 		+ "Release TRIGGER: let go (keep momentum)\n"
 		+ "No web out: floaty low-gravity air\n"
-		+ "Sticks: walk / turn · Left AX: jump · Right AX: respawn"
+		+ "Sticks: walk / turn · Left AX: jump · Right AX: respawn\n"
+		+ "Aim at the glowing roof lever, pull TRIGGER: day ↔ night"
 	)
 	camera.add_child(_hint)
 	_hud_time = HUD_FADE_SECONDS
@@ -417,10 +422,19 @@ func _try_attach(web: Dictionary, side: String) -> void:
 	var from := palm.global_position if palm != null else hand.global_position
 	var dir := -hand.global_transform.basis.z
 	var space := get_viewport().get_world_3d().direct_space_state
-	var query := PhysicsRayQueryParameters3D.create(from, from + dir * WEB_REACH, WEBBABLE_MASK)
+	var query := PhysicsRayQueryParameters3D.create(from, from + dir * WEB_REACH, AIM_MASK)
 	var hit := space.intersect_ray(query)
 	if hit.is_empty():
 		_flash_hint("no attach point — aim at a building")
+		return
+	var collider := hit["collider"] as Node
+	if collider != null and collider.is_in_group("day_switch"):
+		var sw := collider.get_meta("switch_node") as DaySwitch
+		if sw != null:
+			sw.activate()
+			_pulse_haptic(hand, 0.9)
+			var city := _city()
+			_flash_hint("NIGHT FALLS over the city" if city != null and city.is_night else "SUNRISE over the city")
 		return
 	web["attached"] = true
 	web["anchor"] = hit["position"] as Vector3
@@ -842,13 +856,22 @@ func _update_aim_dot(web: Dictionary) -> void:
 	var from := palm.global_position if palm != null else hand.global_position
 	var dir := -hand.global_transform.basis.z
 	var space := get_viewport().get_world_3d().direct_space_state
-	var query := PhysicsRayQueryParameters3D.create(from, from + dir * WEB_REACH, WEBBABLE_MASK)
+	var query := PhysicsRayQueryParameters3D.create(from, from + dir * WEB_REACH, AIM_MASK)
 	var hit := space.intersect_ray(query)
 	var aiming := not hit.is_empty()
 	if aiming:
 		var point := hit["position"] as Vector3
 		dot.visible = true
 		dot.global_position = point + (from - point).normalized() * 0.06
+		var mat := dot.material_override as StandardMaterial3D
+		var base := web["cord_color"] as Color
+		var collider := hit["collider"] as Node
+		if collider != null and collider.is_in_group("day_switch"):
+			dot.scale = Vector3.ONE * AIM_DOT_SWITCH_SCALE
+			mat.albedo_color = AIM_DOT_SWITCH_COLOR
+		else:
+			dot.scale = Vector3.ONE
+			mat.albedo_color = Color(base.r, base.g, base.b, 0.8)
 	else:
 		dot.visible = false
 	if aiming and not bool(web["aiming_was"]):
@@ -955,6 +978,13 @@ func _update_hud(delta: float) -> void:
 		_status.text = "%.1f m/s%s" % [speed, buffs]
 	else:
 		_status.text = buffs.strip_edges()
+
+
+func _city() -> CityBuilder:
+	var parent := get_parent()
+	if parent == null:
+		return null
+	return parent.get_node_or_null("City") as CityBuilder
 
 
 func _flash_hint(text: String) -> void:
