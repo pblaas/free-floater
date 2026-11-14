@@ -19,13 +19,13 @@ momentum as you swing from rooftop to rooftop.
 - **Procedural city** — 200+ webbable buildings drawn as merged, draw-call-
   cheap facade meshes with per-palette high-res albedo, roughness/metallic,
   and normal maps; setbacks, parapets, roof props, and varied window density.
-- **Day/night switch** — a glowing lever spawns on one of the colored
-  landmark towers; aim at it and pull the trigger to toggle night mode:
-  the sky darkens into a starfield with a milky-way band, spiral galaxies
-  and shooting stars, and the building windows light up (landmark towers
-  glow in their own color). Pull again to switch back to day.
-- **Neon nights** — some buildings carry green/purple neon roofline bands
-  and vertical corner strips that glow after dark.
+- **Day/night switches** — glowing levers spawn on two colored landmark
+  towers. One toggles **day ↔ night** (dark city, fully lit windows); the
+  other toggles **day ↔ twilight** (starry sky with daytime-colored
+  buildings and scattered warm windows, as if someone is home). Pull again
+  to switch back to day.
+- **Neon nights** — some buildings carry thin green/purple neon corner
+  strips that glow after dark.
 - **Visible hands** — low-poly gloved hands in the web-shoot pose on both
   controllers; cords fire from the palm.
 - **On-headset HUD** — status label (web sides, speed, reel indicator) and a
@@ -90,7 +90,7 @@ stamp and the in-VR version label read it.
 | Thumbstick | Walk (up/down) / snap-turn (left/right) |
 | Left AX | Jump |
 | Right AX | Respawn |
-| Trigger on roof lever | Toggle day / night |
+| Trigger on roof lever | Toggle day / night or day / twilight |
 
 ## License
 

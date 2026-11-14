@@ -6,6 +6,8 @@ class_name DaySwitch
 
 signal toggled(is_night: bool)
 
+@export var label_text := "DAY / NIGHT"
+
 const SWITCH_LAYER := 8
 const LEVER_DAY_ROT := -0.55
 const LEVER_NIGHT_ROT := 0.55
@@ -107,7 +109,7 @@ func _build_lever() -> void:
 func _build_label() -> void:
 	var label := Label3D.new()
 	label.name = "Tag"
-	label.text = "DAY / NIGHT"
+	label.text = label_text
 	label.font_size = 48
 	label.pixel_size = 0.002
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED

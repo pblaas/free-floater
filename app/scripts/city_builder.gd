@@ -8,6 +8,8 @@ class_name CityBuilder
 
 signal night_changed(is_night: bool)
 
+enum Mode { DAY, NIGHT, TWILIGHT }
+
 const GROUND_LAYER := 1
 const BUILDING_LAYER := 2
 const SWITCH_LAYER := 8
@@ -39,6 +41,7 @@ const NIGHT_SUN_COLOR := Color(0.55, 0.63, 0.95)
 const DAY_SUN_COLOR := Color(1.0, 0.95, 0.85)
 const DAY_AMBIENT_SKY := 0.7
 const NIGHT_AMBIENT_SKY := 1.0
+const TWILIGHT_AMBIENT_SKY := 0.85
 const SHADOW_MAX_DISTANCE := 160.0
 const NIGHT_SKY_TOP := Color(0.012, 0.02, 0.05)
 const NIGHT_SKY_HORIZON := Color(0.05, 0.06, 0.1)
@@ -62,8 +65,8 @@ const WINDOW_WARM := Color(1.0, 0.72, 0.42)
 const NIGHT_WALL_SCALE := 0.32
 const NEON_GREEN := Color(0.25, 1.0, 0.6)
 const NEON_PURPLE := Color(0.66, 0.3, 1.0)
-const NEON_TRIM_CHANCE := 0.12
 const NEON_STRIP_CHANCE := 0.07
+const TWILIGHT_LIT_CHANCE := 0.35
 const GLASS_DAY := Color(0.3, 0.42, 0.56)
 const GLASS_NIGHT := Color(0.015, 0.02, 0.032)
 const LANDMARK_COLORS := [
@@ -83,6 +86,7 @@ var building_count := 0
 var landmark_count := 0
 
 var is_night := false
+var _mode := Mode.DAY
 
 var _rng := RandomNumberGenerator.new()
 var _facade_records: Array[Dictionary] = []
@@ -165,6 +169,7 @@ func _make_facade_set(
 		"day": _raster_day(base, tex_w, tex_h, wf, hf, glass),
 		"night": _raster_night(base * NIGHT_WALL_SCALE, plan, tex_w, tex_h, wf, hf),
 		"mask": _raster_mask(plan, tex_w, tex_h, wf, hf),
+		"mask_twilight": _raster_mask_twilight(plan, tex_w, tex_h, wf, hf),
 		"spec": _raster_spec(tex_w, tex_h, wf, hf),
 		"normal": _raster_normal(tex_w, tex_h, wf, hf),
 		"color": color,
@@ -275,6 +280,22 @@ func _raster_normal(w: int, h: int, wf: float, hf: float) -> ImageTexture:
 	return ImageTexture.create_from_image(img)
 
 
+## Sparse "someone's home" emission mask for twilight mode.
+func _raster_mask_twilight(plan: PackedByteArray, w: int, h: int, wf: float, hf: float) -> ImageTexture:
+	var img := Image.create(w, h, false, Image.FORMAT_RGB8)
+	img.fill(Color.BLACK)
+	var wins := _window_rects(w, h, wf, hf)
+	for i in wins.size():
+		if plan[i] == 0:
+			continue
+		if _rng.randf() > TWILIGHT_LIT_CHANCE:
+			continue
+		var brightness := _rng.randf_range(0.8, 1.0)
+		img.fill_rect(wins[i], Color(brightness, brightness, brightness))
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
+
+
 func _build_ground() -> void:
 	var ground := StaticBody3D.new()
 	ground.name = "Ground"
@@ -374,7 +395,9 @@ func _build_buildings() -> void:
 		building_count += 1
 		landmark_count += 1
 		if i == 0:
-			_spawn_day_switch(tower, pos, width, height)
+			_spawn_day_switch(tower, pos, width, height, "DAY / NIGHT", false)
+		elif i == 1:
+			_spawn_day_switch(tower, pos, width, height, "DAY / TWILIGHT", true)
 		roof_spots.append(pos + Vector3(0.0, height + 1.0, 0.0))
 		_building_boxes.append({
 			"pos": pos,
@@ -709,25 +732,21 @@ func _append_parapet(base: Vector3, w: float, d: float) -> void:
 	_append_box(_roof_st, Vector3(base.x - (w * 0.5 - t * 0.5), y, base.z), Vector3(t, ph, d - t * 2.0))
 
 
-## Green/purple neon accents, visible only at night: a glowing band around
-## some rooflines or vertical strips along building corners.
+## Green/purple neon accents, visible only at night: thin vertical corner
+## strips. Roofline bands were removed because the overhangs hurt night
+## fill-rate and looked visually noisy.
 func _spawn_neon(pos: Vector3, width: float, depth: float, height: float) -> void:
-	var roll := _rng.randf()
+	if _rng.randf() >= NEON_STRIP_CHANCE:
+		return
 	var neon := NEON_GREEN if _rng.randf() < 0.5 else NEON_PURPLE
 	var st := _neon_sts[neon] as SurfaceTool
-	if roll < NEON_TRIM_CHANCE:
+	for corner in 4:
+		var sx := (width * 0.5 - 0.045) * (1.0 if corner % 2 == 0 else -1.0)
+		var sz := (depth * 0.5 - 0.045) * (1.0 if corner < 2 else -1.0)
 		_append_box(
 			st,
-			pos + Vector3(0.0, height + 0.28, 0.0),
-			Vector3(width + 0.25, 0.16, depth + 0.25))
-	elif roll < NEON_TRIM_CHANCE + NEON_STRIP_CHANCE:
-		for corner in 4:
-			var sx := (width * 0.5 - 0.045) * (1.0 if corner % 2 == 0 else -1.0)
-			var sz := (depth * 0.5 - 0.045) * (1.0 if corner < 2 else -1.0)
-			_append_box(
-				st,
-				pos + Vector3(sx, height * 0.5, sz),
-				Vector3(0.09, height, 0.09))
+			pos + Vector3(sx, height * 0.5, sz),
+			Vector3(0.09, height, 0.09))
 
 
 func _add_roof_prop(base: Vector3, width: float, depth: float) -> void:
@@ -759,34 +778,54 @@ func _maybe_roof_marker(pos: Vector3, height: float) -> void:
 		Basis.IDENTITY, pos + Vector3(0.0, height + 0.7, 0.0)))
 
 
-func _spawn_day_switch(landmark: Node3D, pos: Vector3, width: float, height: float) -> void:
+func _spawn_day_switch(
+	landmark: Node3D,
+	pos: Vector3,
+	width: float,
+	height: float,
+	label: String,
+	twilight: bool
+) -> void:
 	var sw := DaySwitch.new()
 	sw.name = "DaySwitch"
+	sw.label_text = label
 	sw.position = pos + Vector3(width * 0.28, height + 0.5, width * 0.28)
-	sw.toggled.connect(_on_switch_toggled)
+	if twilight:
+		sw.toggled.connect(_on_twilight_switch_toggled)
+	else:
+		sw.toggled.connect(_on_switch_toggled)
 	add_child(sw)
 
 
 func _on_switch_toggled(switch_is_night: bool) -> void:
-	set_night(switch_is_night)
+	set_mode(Mode.NIGHT if switch_is_night else Mode.DAY)
 
 
-## Swap the whole city between day and night: sun/sky/fog, window emission
-## on every facade, and dimmed unshaded backdrop silhouettes.
-func set_night(night: bool) -> void:
-	if is_night == night:
+func _on_twilight_switch_toggled(switch_is_twilight: bool) -> void:
+	set_mode(Mode.TWILIGHT if switch_is_twilight else Mode.DAY)
+
+
+## Swap the whole city between day, night, and twilight: sun/sky/fog,
+## window emission on every facade, and dimmed unshaded backdrop silhouettes.
+func set_mode(mode: Mode) -> void:
+	if _mode == mode:
 		return
-	is_night = night
-	_apply_night_lighting()
+	_mode = mode
+	is_night = mode != Mode.DAY
+	_apply_mode_lighting()
 	for entry in _facade_mats:
 		_apply_facade_mode(entry["mat"] as StandardMaterial3D, entry["rec"] as Dictionary)
 	for mat in _backdrop_mats:
-		mat.albedo_color = (mat.get_meta("base") as Color) * (BACKDROP_NIGHT_SCALE if night else 1.0)
+		mat.albedo_color = (mat.get_meta("base") as Color) * (BACKDROP_NIGHT_SCALE if is_night else 1.0)
 	for node in _neon_nodes:
-		node.visible = night
+		node.visible = is_night
 	if _sky != null:
-		_sky.sky_material = _night_sky_mat if night else _procedural_sky_mat
-	night_changed.emit(night)
+		_sky.sky_material = _procedural_sky_mat if mode == Mode.DAY else _night_sky_mat
+	night_changed.emit(is_night)
+
+
+func set_night(night: bool) -> void:
+	set_mode(Mode.NIGHT if night else Mode.DAY)
 
 
 func toggle_night() -> void:
@@ -794,44 +833,89 @@ func toggle_night() -> void:
 
 
 func _apply_facade_mode(mat: StandardMaterial3D, rec: Dictionary) -> void:
-	if is_night:
-		mat.albedo_texture = rec["night"]
-		mat.emission_enabled = true
-		mat.emission_texture = rec["mask"]
-		if rec["landmark"]:
-			mat.emission = (rec["color"] as Color).lightened(0.2)
-			mat.emission_energy_multiplier = 1.7
-		else:
-			mat.emission = WINDOW_WARM
-			mat.emission_energy_multiplier = 0.75
-	else:
-		mat.albedo_texture = rec["day"]
-		mat.emission_texture = null
-		if rec["landmark"]:
+	match _mode:
+		Mode.DAY:
+			mat.albedo_texture = rec["day"]
+			mat.emission_texture = null
+			if rec["landmark"]:
+				mat.emission_enabled = true
+				mat.emission = (rec["color"] as Color) * 0.25
+				mat.emission_energy_multiplier = 0.6
+			else:
+				mat.emission_enabled = false
+		Mode.NIGHT:
+			mat.albedo_texture = rec["night"]
 			mat.emission_enabled = true
-			mat.emission = (rec["color"] as Color) * 0.25
-			mat.emission_energy_multiplier = 0.6
-		else:
-			mat.emission_enabled = false
+			mat.emission_texture = rec["mask"]
+			if rec["landmark"]:
+				mat.emission = (rec["color"] as Color).lightened(0.2)
+				mat.emission_energy_multiplier = 1.7
+			else:
+				mat.emission = WINDOW_WARM
+				mat.emission_energy_multiplier = 0.75
+		Mode.TWILIGHT:
+			mat.albedo_texture = rec["day"]
+			mat.emission_enabled = true
+			mat.emission_texture = rec["mask_twilight"]
+			if rec["landmark"]:
+				mat.emission = (rec["color"] as Color).lightened(0.2)
+				mat.emission_energy_multiplier = 1.4
+			else:
+				mat.emission = WINDOW_WARM
+				mat.emission_energy_multiplier = 1.0
 
 
-func _apply_night_lighting() -> void:
+func _apply_mode_lighting() -> void:
 	if _sun != null:
-		_sun.light_energy = NIGHT_SUN_ENERGY if is_night else DAY_SUN_ENERGY
-		_sun.light_color = NIGHT_SUN_COLOR if is_night else DAY_SUN_COLOR
+		match _mode:
+			Mode.DAY:
+				_sun.light_energy = DAY_SUN_ENERGY
+				_sun.light_color = DAY_SUN_COLOR
+			Mode.NIGHT:
+				_sun.light_energy = NIGHT_SUN_ENERGY
+				_sun.light_color = NIGHT_SUN_COLOR
+			Mode.TWILIGHT:
+				_sun.light_energy = 0.75
+				_sun.light_color = Color(0.72, 0.78, 1.0)
 	if _sky_mat != null:
-		_sky_mat.sky_top_color = NIGHT_SKY_TOP if is_night else DAY_SKY_TOP
-		_sky_mat.sky_horizon_color = NIGHT_SKY_HORIZON if is_night else DAY_SKY_HORIZON
-		_sky_mat.ground_bottom_color = NIGHT_GROUND_BOTTOM if is_night else DAY_GROUND_BOTTOM
-		_sky_mat.ground_horizon_color = NIGHT_GROUND_HORIZON if is_night else DAY_GROUND_HORIZON
+		match _mode:
+			Mode.DAY:
+				_sky_mat.sky_top_color = DAY_SKY_TOP
+				_sky_mat.sky_horizon_color = DAY_SKY_HORIZON
+				_sky_mat.ground_bottom_color = DAY_GROUND_BOTTOM
+				_sky_mat.ground_horizon_color = DAY_GROUND_HORIZON
+			_:
+				_sky_mat.sky_top_color = NIGHT_SKY_TOP
+				_sky_mat.sky_horizon_color = NIGHT_SKY_HORIZON
+				_sky_mat.ground_bottom_color = NIGHT_GROUND_BOTTOM
+				_sky_mat.ground_horizon_color = NIGHT_GROUND_HORIZON
 	if _env != null:
-		_env.fog_light_color = NIGHT_FOG_COLOR if is_night else DAY_FOG_COLOR
-		_env.fog_density = NIGHT_FOG_DENSITY if is_night else DAY_FOG_DENSITY
-		_env.fog_height = NIGHT_FOG_HEIGHT if is_night else DAY_FOG_HEIGHT
-		_env.fog_height_density = NIGHT_FOG_HEIGHT_DENSITY if is_night else DAY_FOG_HEIGHT_DENSITY
-		_env.fog_sky_affect = 0.2 if is_night else DAY_FOG_SKY_AFFECT
-		_env.ambient_light_sky_contribution = (
-			NIGHT_AMBIENT_SKY if is_night else DAY_AMBIENT_SKY)
+		match _mode:
+			Mode.DAY:
+				_env.fog_light_color = DAY_FOG_COLOR
+				_env.fog_density = DAY_FOG_DENSITY
+				_env.fog_height = DAY_FOG_HEIGHT
+				_env.fog_height_density = DAY_FOG_HEIGHT_DENSITY
+				_env.fog_sky_affect = DAY_FOG_SKY_AFFECT
+				_env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+				_env.ambient_light_sky_contribution = DAY_AMBIENT_SKY
+			Mode.NIGHT:
+				_env.fog_light_color = NIGHT_FOG_COLOR
+				_env.fog_density = NIGHT_FOG_DENSITY
+				_env.fog_height = NIGHT_FOG_HEIGHT
+				_env.fog_height_density = NIGHT_FOG_HEIGHT_DENSITY
+				_env.fog_sky_affect = 0.2
+				_env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+				_env.ambient_light_sky_contribution = NIGHT_AMBIENT_SKY
+			Mode.TWILIGHT:
+				_env.fog_light_color = DAY_FOG_COLOR
+				_env.fog_density = DAY_FOG_DENSITY * 0.85
+				_env.fog_height = DAY_FOG_HEIGHT
+				_env.fog_height_density = DAY_FOG_HEIGHT_DENSITY
+				_env.fog_sky_affect = 0.05
+				_env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+				_env.ambient_light_color = Color(0.18, 0.20, 0.26)
+				_env.ambient_light_energy = 0.65
 
 
 func _build_powerups() -> void:
