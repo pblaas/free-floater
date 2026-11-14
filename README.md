@@ -16,15 +16,16 @@ momentum as you swing from rooftop to rooftop.
   faster.
 - **Low-gravity locomotion** — floaty air for long swings, smooth walk +
   snap-turn on the ground, left **AX** to jump, right **AX** to respawn.
-- **Procedural city** — 200+ webbable buildings with generated facade
-  textures, lit/dark windows, and roof caps you can land and walk on.
+- **Procedural city** — 200+ webbable buildings drawn as merged, draw-call-
+  cheap facade meshes with per-palette high-res albedo, roughness/metallic,
+  and normal maps; setbacks, parapets, roof props, and varied window density.
 - **Day/night switch** — a glowing lever spawns on one of the colored
   landmark towers; aim at it and pull the trigger to toggle night mode:
   the sky darkens into a starfield with a milky-way band, spiral galaxies
   and shooting stars, and the building windows light up (landmark towers
   glow in their own color). Pull again to switch back to day.
-- **Neon nights** — some buildings carry green/purple neon: glowing
-  roofline bands, vertical corner strips, and neon-tinted window glow.
+- **Neon nights** — some buildings carry green/purple neon roofline bands
+  and vertical corner strips that glow after dark.
 - **Visible hands** — low-poly gloved hands in the web-shoot pose on both
   controllers; cords fire from the palm.
 - **On-headset HUD** — status label (web sides, speed, reel indicator) and a

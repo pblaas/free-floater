@@ -229,10 +229,29 @@ func _test_day_night() -> void:
 	var sun := city.get_node_or_null("Sun") as DirectionalLight3D
 	check(sun != null, "sun light exists for day/night swap")
 	var day_energy := sun.light_energy
-	var facade := city.get_node("Buildings").get_child(0).get_node("Mesh") as MeshInstance3D
+	var facade: MeshInstance3D = null
+	var lmat: StandardMaterial3D = null
+	for child in city.get_node("Buildings").get_children():
+		var mi := child as MeshInstance3D
+		if mi == null or not String(mi.name).begins_with("Facade_"):
+			continue
+		var m := mi.material_override as StandardMaterial3D
+		if m == null:
+			continue
+		if m.emission_enabled and lmat == null:
+			lmat = m
+		elif not m.emission_enabled and facade == null:
+			facade = mi
+	check(facade != null, "merged facade meshes exist")
+	if facade == null:
+		city.queue_free()
+		await process_frame
+		return
 	var mat := facade.material_override as StandardMaterial3D
 	var day_albedo := mat.albedo_texture
 	check(not mat.emission_enabled, "day facades do not emit")
+	check(mat.roughness_texture != null and mat.metallic_texture != null, "facades carry a glass spec map")
+	check(mat.normal_texture != null, "facades carry a window normal map")
 
 	city.set_night(true)
 	check(city.is_night, "set_night(true) flips state")
@@ -253,42 +272,34 @@ func _test_day_night() -> void:
 	check(not city.is_night, "switch activation toggles back to day")
 	check(sun.light_energy == day_energy, "sun restored after round trip")
 
-	var landmark: Node3D = null
-	for node in city.get_node("Buildings").get_children():
-		if node.is_in_group("landmarks"):
-			landmark = node
-			break
-	if landmark != null:
-		var lmat := (landmark.get_node("Mesh") as MeshInstance3D).material_override as StandardMaterial3D
+	if lmat != null:
 		var day_emission: Color = lmat.emission
 		city.set_night(true)
 		check(lmat.emission_enabled, "night keeps landmark emission on")
 		check((lmat.emission as Color) != day_emission, "night recolors landmark glow")
 		check((lmat.emission_energy_multiplier as float) > 1.0, "landmark windows glow brighter at night")
+		var warm_windows := 0
+		for entry in city._facade_mats:
+			var rec: Dictionary = entry["rec"]
+			if rec["landmark"]:
+				continue
+			if (entry["mat"] as StandardMaterial3D).emission == Color(1.0, 0.72, 0.42):
+				warm_windows += 1
+		check(warm_windows > 5, "facade groups emit warm night windows (%d)" % warm_windows)
 		city.set_night(false)
+	else:
+		check(false, "landmark facade material found")
 
-	var neon_sample: GeometryInstance3D = null
-	var neon_total := 0
-	for node in city.get_node("Buildings").get_children():
-		for sub in node.get_children():
-			if sub is GeometryInstance3D and String(sub.name).begins_with("Neon"):
-				neon_total += 1
-				if neon_sample == null:
-					neon_sample = sub
-	check(neon_total > 5, "neon trims/strips spawned on some buildings (%d)" % neon_total)
-	check(neon_sample != null and not neon_sample.visible, "neon hidden during day")
-	var neon_windows := 0
-	for entry in city._facade_mats:
-		var tint: Color = entry["neon"]
-		if tint.r + tint.g + tint.b > 0.5:
-			neon_windows += 1
-	check(neon_windows > 5, "buildings carry green/purple neon window tints (%d)" % neon_windows)
+	var neon_g := city.get_node("Buildings").get_node_or_null("NeonGreen") as GeometryInstance3D
+	var neon_p := city.get_node("Buildings").get_node_or_null("NeonPurple") as GeometryInstance3D
+	check(neon_g != null and neon_p != null, "merged neon meshes exist")
+	check(neon_g != null and not neon_g.visible, "neon hidden during day")
 	city.set_night(true)
-	check(neon_sample.visible, "neon glows at night")
+	check(neon_g != null and neon_g.visible and neon_p.visible, "neon glows at night")
 	var night_env: Environment = city.get_node("WorldEnv").environment
 	check(night_env.sky.sky_material is ShaderMaterial, "night swaps in starfield sky shader")
 	city.set_night(false)
-	check(not neon_sample.visible, "neon off again in day")
+	check(not neon_g.visible, "neon off again in day")
 	check(
 		city.get_node("WorldEnv").environment.sky.sky_material is ProceduralSkyMaterial,
 		"day restores procedural sky"
