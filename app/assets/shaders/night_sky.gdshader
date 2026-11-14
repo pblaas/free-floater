@@ -54,7 +54,7 @@ vec3 milkyway(vec3 dir) {
 	vec3 n = normalize(vec3(0.35, 0.72, -0.35));
 	float d = dot(dir, n);
 	float band = exp(-d * d / 0.024);
-	return vec3(0.55, 0.6, 0.8) * band * 0.09;
+	return vec3(0.55, 0.6, 0.8) * band * 0.05;
 }
 
 vec3 galaxy(vec3 dir, vec3 center, vec3 tint, float size, float arms) {
@@ -133,8 +133,8 @@ void sky() {
 	col += city_glow_color * exp(-gh * gh) * 0.01;
 	col = mix(col, horizon_color * 0.4, smoothstep(0.0, -0.25, h));
 	col += milkyway(dir);
-	col += galaxy(dir, normalize(vec3(-0.55, 0.42, 0.4)), vec3(0.5, 0.38, 0.85), 0.16, 2.0) * 1.1;
-	col += galaxy(dir, normalize(vec3(0.6, 0.28, -0.55)), vec3(0.35, 0.6, 0.8), 0.11, 3.0) * 0.9;
+	col += galaxy(dir, normalize(vec3(-0.55, 0.42, 0.4)), vec3(0.5, 0.38, 0.85), 0.16, 2.0) * 0.6;
+	col += galaxy(dir, normalize(vec3(0.6, 0.28, -0.55)), vec3(0.35, 0.6, 0.8), 0.11, 3.0) * 0.5;
 	col += stars(dir);
 	col += meteors(dir);
 	COLOR = col;

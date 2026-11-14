@@ -68,6 +68,18 @@ const WIND_MAX_DB := -5.0
 const WIND_SMOOTH := 3.0
 const THUD_MIN_IMPACT := 2.0
 const CORD_SEGMENTS := 14
+const FINGER_SEGMENTS := 3
+const FINGER_SEGMENT_LENGTHS := [0.038, 0.028, 0.024]
+const FINGER_RADIUS := 0.010
+const FINGER_SPREAD_X := [-0.033, -0.011, 0.011, 0.033]
+const FINGER_BASE_Y := 0.045
+const FINGER_BASE_Z := -0.058
+const THUMB_BASE_X := 0.052
+const THUMB_BASE_Y := -0.015
+const THUMB_BASE_Z := -0.018
+const THUMB_SEGMENT_LENGTHS := [0.030, 0.026]
+const THUMB_RADIUS := 0.011
+const HAND_TRIGGER_SMOOTH := 12.0
 
 @export var spawn_point := Vector3(0.0, 30.0, 0.0)
 
@@ -98,6 +110,8 @@ var _chain_pulse := 0.0
 var _score_label: Label3D
 var _chain_label: Label3D
 var _mask_mat: ShaderMaterial
+var _hand_meshes := {}
+var _trigger_values := {"L": 0.0, "R": 0.0}
 var _playlist: Array = []
 var _track_index := -1
 var _now_playing_time := 0.0
@@ -202,6 +216,8 @@ static func solve_rope(
 func _setup_webs() -> void:
 	_webs["L"] = _make_web(left_controller, Color(1.0, 0.3, 0.24), true)
 	_webs["R"] = _make_web(right_controller, Color(0.24, 0.62, 1.0), false)
+	_hand_meshes["L"] = _webs["L"].get("hand_mesh")
+	_hand_meshes["R"] = _webs["R"].get("hand_mesh")
 
 
 func _make_web(hand: XRController3D, color: Color, is_left: bool) -> Dictionary:
@@ -237,6 +253,7 @@ func _make_web(hand: XRController3D, color: Color, is_left: bool) -> Dictionary:
 		parent.add_child.call_deferred(dot)
 	return {
 		"hand": hand,
+		"hand_mesh": hand_mesh,
 		"web_origin": hand_mesh.get_node("WebOrigin") as Node3D,
 		"attached": false,
 		"anchor": Vector3.ZERO,
@@ -257,40 +274,87 @@ func _make_hand_mesh(hand: XRController3D, color: Color, is_left: bool) -> Node3
 	glove.albedo_color = color
 	glove.roughness = 0.6
 
+	# Palm: slightly rounded box shape with room for fingers at the top edge.
 	var palm := MeshInstance3D.new()
 	palm.name = "Palm"
 	var palm_mesh := BoxMesh.new()
-	palm_mesh.size = Vector3(0.085, 0.11, 0.03)
+	palm_mesh.size = Vector3(0.086, 0.10, 0.032)
 	palm.mesh = palm_mesh
 	palm.material_override = glove
-	palm.position = Vector3(0.0, 0.01, -0.045)
+	palm.position = Vector3(0.0, 0.0, -0.045)
 	root.add_child(palm)
 
-	for i in 4:
-		var finger := MeshInstance3D.new()
-		finger.name = "Finger%d" % i
-		var finger_mesh := CapsuleMesh.new()
-		finger_mesh.radius = 0.011
-		finger_mesh.height = 0.1
-		finger.mesh = finger_mesh
-		finger.material_override = glove
-		var x := -0.032 + float(i) * 0.021
-		finger.position = Vector3(x, 0.1, -0.045)
-		finger.rotation.z = -x * 2.2
-		root.add_child(finger)
+	# Wrist / lower palm pad where fingertips curl toward.
+	var palm_pad := MeshInstance3D.new()
+	palm_pad.name = "PalmPad"
+	var pad_mesh := BoxMesh.new()
+	pad_mesh.size = Vector3(0.070, 0.026, 0.038)
+	palm_pad.mesh = pad_mesh
+	palm_pad.material_override = glove
+	palm_pad.position = Vector3(0.0, -0.045, -0.045)
+	root.add_child(palm_pad)
 
-	var thumb := MeshInstance3D.new()
-	thumb.name = "Thumb"
-	var thumb_mesh := CapsuleMesh.new()
-	thumb_mesh.radius = 0.012
-	thumb_mesh.height = 0.075
-	thumb.mesh = thumb_mesh
-	thumb.material_override = glove
-	var side := -1.0 if not is_left else 1.0
-	thumb.position = Vector3(side * 0.05, -0.005, -0.02)
-	thumb.rotation.z = side * -0.9
-	thumb.rotation.x = -0.3
-	root.add_child(thumb)
+	# Finger joints are stored in nested Node3Ds so each segment rotates around
+	# its base and child segments inherit that rotation.
+	var finger_joints := []
+	for i in 4:
+		var base := Node3D.new()
+		base.name = "FingerBase%d" % i
+		base.position = Vector3(FINGER_SPREAD_X[i], FINGER_BASE_Y, FINGER_BASE_Z)
+		# Splay the finger base outward along Z so fingers are not parallel.
+		base.rotation.z = -FINGER_SPREAD_X[i] * 0.35
+		base.set_meta("rest_z", base.rotation.z)
+		root.add_child(base)
+
+		var joints := [base]
+		for s in FINGER_SEGMENTS:
+			var seg_len: float = FINGER_SEGMENT_LENGTHS[s]
+			var seg := MeshInstance3D.new()
+			seg.name = "FingerSeg%d_%d" % [i, s]
+			var seg_mesh := CapsuleMesh.new()
+			seg_mesh.radius = FINGER_RADIUS
+			seg_mesh.height = seg_len
+			seg.mesh = seg_mesh
+			seg.material_override = glove
+			seg.position = Vector3(0.0, seg_len * 0.5, 0.0)
+			base.add_child(seg)
+
+			if s < FINGER_SEGMENTS - 1:
+				var next := Node3D.new()
+				next.name = "FingerJoint%d_%d" % [i, s]
+				next.position = Vector3(0.0, seg_len, 0.0)
+				base.add_child(next)
+				base = next
+				joints.append(base)
+		finger_joints.append(joints)
+
+	# Thumb stays articulated but does not curl with the trigger.
+	var thumb_side := -1.0 if not is_left else 1.0
+	var thumb_base := Node3D.new()
+	thumb_base.name = "ThumbBase"
+	thumb_base.position = Vector3(thumb_side * THUMB_BASE_X, THUMB_BASE_Y, THUMB_BASE_Z)
+	thumb_base.rotation.z = thumb_side * -1.0
+	thumb_base.rotation.x = -0.35
+	root.add_child(thumb_base)
+	var thumb_joints := [thumb_base]
+	for s in THUMB_SEGMENT_LENGTHS.size():
+		var seg_len: float = THUMB_SEGMENT_LENGTHS[s]
+		var seg := MeshInstance3D.new()
+		seg.name = "ThumbSeg%d" % s
+		var seg_mesh := CapsuleMesh.new()
+		seg_mesh.radius = THUMB_RADIUS
+		seg_mesh.height = seg_len
+		seg.mesh = seg_mesh
+		seg.material_override = glove
+		seg.position = Vector3(0.0, seg_len * 0.5, 0.0)
+		thumb_base.add_child(seg)
+		if s < THUMB_SEGMENT_LENGTHS.size() - 1:
+			var next := Node3D.new()
+			next.name = "ThumbJoint%d" % s
+			next.position = Vector3(0.0, seg_len, 0.0)
+			thumb_base.add_child(next)
+			thumb_base = next
+			thumb_joints.append(thumb_base)
 
 	var shooter := MeshInstance3D.new()
 	shooter.name = "WebShooter"
@@ -311,6 +375,8 @@ func _make_hand_mesh(hand: XRController3D, color: Color, is_left: bool) -> Node3
 	root.add_child(origin)
 
 	hand.add_child(root)
+	root.set_meta("finger_joints", finger_joints)
+	root.set_meta("thumb_joints", thumb_joints)
 	return root
 
 
@@ -403,17 +469,44 @@ func _update_web_inputs() -> void:
 func _update_web_input(web: Dictionary, side: String) -> void:
 	var hand := web["hand"] as XRController3D
 	var pressed := hand.is_button_pressed("trigger_click")
+	var trigger_value := clampf(hand.get_float("trigger"), 0.0, 1.0)
+	var delta := get_process_delta_time()
+	var current := _trigger_values.get(side, 0.0) as float
+	var decay := 1.0 - exp(-HAND_TRIGGER_SMOOTH * delta)
+	_trigger_values[side] = lerpf(current, trigger_value, decay)
+	_update_hand_pose(side)
 	if pressed and not bool(web["pressed_was"]):
 		_try_attach(web, side)
 	elif not pressed and bool(web["pressed_was"]):
 		_detach(web, side)
 	web["pressed_was"] = pressed
 	if bool(web["attached"]):
-		var delta := get_process_delta_time()
 		var reel := _reel_base()
 		if hand.get_float("grip") > 0.5 or hand.is_button_pressed("grip_click"):
 			reel += GRIP_REEL_SPEED
 		web["rope_length"] = maxf(float(web["rope_length"]) - reel * delta, MIN_ROPE)
+
+
+func _update_hand_pose(side: String) -> void:
+	var hand_mesh := _hand_meshes.get(side) as Node3D
+	if hand_mesh == null:
+		return
+	var curl := _trigger_values.get(side, 0.0) as float
+	var finger_joints: Array = hand_mesh.get_meta("finger_joints", [])
+	# Curl all non-thumb fingers toward the bottom palm.
+	for finger in finger_joints:
+		var joints: Array = finger
+		var joint_count := joints.size()
+		for i in joint_count:
+			var joint := joints[i] as Node3D
+			if joint == null:
+				continue
+			# Progressive curl: base knuckles curl less, tips curl more.
+			var base_angle := deg_to_rad(85.0) * curl
+			var bias := 1.0 + 0.6 * (float(i) / maxf(joint_count - 1, 1.0))
+			joint.rotation.x = -base_angle * bias
+			# Slight inward fan so the pinky and index clear each other.
+			joint.rotation.z = joint.get_meta("rest_z", 0.0) * (1.0 - curl * 0.4)
 
 
 func _try_attach(web: Dictionary, side: String) -> void:
