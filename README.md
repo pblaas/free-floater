@@ -19,7 +19,8 @@ momentum as you swing from rooftop to rooftop.
 - **Procedural city** — 200+ webbable buildings drawn as merged, draw-call-
   cheap facade meshes with per-palette high-res albedo, roughness/metallic,
   and normal maps; setbacks, parapets, roof props, varied window density,
-  and a street/sidewalk grid below.
+  a street/sidewalk grid below, and moving traffic with headlights /
+  taillights.
 - **Day/night switches** — glowing levers spawn on two colored landmark
   towers. One toggles **day ↔ night** (dark city, fully lit windows); the
   other toggles **day ↔ twilight** (starry sky with daytime-colored

@@ -63,6 +63,11 @@ const DAY_FOG_SKY_AFFECT := 0.05
 const BACKDROP_NIGHT_SCALE := 0.15
 const BACKDROP_TWILIGHT_SCALE := 0.45
 const WINDOW_WARM := Color(1.0, 0.72, 0.42)
+const TRAFFIC_CAR_LENGTH := 3.3
+const TRAFFIC_CAR_WIDTH := 1.7
+const TRAFFIC_CAR_HEIGHT := 0.7
+const TRAFFIC_LANE_OFFSET := 1.0
+const TRAFFIC_MIN_GAP := 10.0
 const NIGHT_WALL_SCALE := 0.32
 const NEON_GREEN := Color(0.25, 1.0, 0.6)
 const NEON_PURPLE := Color(0.66, 0.3, 1.0)
@@ -111,6 +116,11 @@ var _ac_mat: StandardMaterial3D
 var _tank_mat: StandardMaterial3D
 var roof_spots: Array[Vector3] = []
 var _building_boxes: Array[Dictionary] = []
+var _traffic_lanes: Array[Dictionary] = []
+var _traffic_cars: Array[Dictionary] = []
+var _traffic_body_mm: MultiMeshInstance3D
+var _traffic_head_mm: MultiMeshInstance3D
+var _traffic_tail_mm: MultiMeshInstance3D
 
 
 func _ready() -> void:
@@ -118,6 +128,7 @@ func _ready() -> void:
 	_build_materials()
 	_build_ground()
 	_build_buildings()
+	_build_traffic()
 	_build_powerups()
 	_build_light_rig()
 	_build_backdrop()
@@ -332,8 +343,13 @@ func _build_ground() -> void:
 	mat.albedo_texture = _build_street_texture()
 	mat.albedo_color = Color(1.0, 1.0, 1.0)
 	mat.roughness = 0.92
-	var repeats := int(GROUND_SIZE / SPACING)
+	var repeats := GROUND_SIZE / SPACING
 	mat.uv1_scale = Vector3(repeats, repeats, 1.0)
+	var half := (GRID_SIZE - 1) * 0.5
+	var uv_offset := fmod(half + 1.0 - repeats * 0.5, 1.0)
+	if uv_offset < 0.0:
+		uv_offset += 1.0
+	mat.uv1_offset = Vector3(uv_offset, uv_offset, 0.0)
 	plane.material_override = mat
 	ground.add_child(plane)
 
@@ -978,6 +994,163 @@ func _apply_mode_lighting() -> void:
 				_env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 				_env.ambient_light_color = Color(0.38, 0.4, 0.46)
 				_env.ambient_light_energy = 0.75
+
+
+func _process(delta: float) -> void:
+	_update_traffic(delta)
+
+
+func _update_traffic(delta: float) -> void:
+	if _traffic_body_mm == null or _traffic_cars.is_empty():
+		return
+	var body_mm := _traffic_body_mm.multimesh
+	var head_mm := _traffic_head_mm.multimesh
+	var tail_mm := _traffic_tail_mm.multimesh
+	for i in _traffic_cars.size():
+		var car: Dictionary = _traffic_cars[i]
+		var lane: Dictionary = _traffic_lanes[car["lane"]]
+		car["dist"] = float(car["dist"]) + float(car["speed"]) * delta
+		if float(car["dist"]) > float(lane["length"]):
+			car["dist"] = float(car["dist"]) - float(lane["length"])
+		var t := _car_transform(car)
+		body_mm.set_instance_transform(i, t["body"])
+		head_mm.set_instance_transform(i, t["head"])
+		tail_mm.set_instance_transform(i, t["tail"])
+
+
+func _car_transform(car: Dictionary) -> Dictionary:
+	var lane: Dictionary = _traffic_lanes[car["lane"]]
+	var pos: Vector3 = lane["start"] + lane["dir"] * float(car["dist"])
+	var forward: Vector3 = lane["dir"]
+	var right := forward.cross(Vector3.UP).normalized()
+	var basis := Basis(right, Vector3.UP, forward)
+	var body := Transform3D(basis, pos)
+	return {
+		"body": body,
+		"head": body * Transform3D(Basis.IDENTITY, Vector3(0.0, 0.0, TRAFFIC_CAR_LENGTH * 0.45)),
+		"tail": body * Transform3D(Basis.IDENTITY, Vector3(0.0, 0.0, -TRAFFIC_CAR_LENGTH * 0.45)),
+	}
+
+
+func _build_traffic() -> void:
+	_traffic_lanes = _compute_traffic_lanes()
+	var container := Node3D.new()
+	container.name = "Traffic"
+	add_child(container)
+
+	var body_mesh := BoxMesh.new()
+	body_mesh.size = Vector3(TRAFFIC_CAR_WIDTH, TRAFFIC_CAR_HEIGHT, TRAFFIC_CAR_LENGTH)
+	var head_mesh := _make_light_pair_mesh()
+	var tail_mesh := _make_light_pair_mesh()
+
+	var body_mat := StandardMaterial3D.new()
+	body_mat.albedo_color = Color(0.12, 0.13, 0.15)
+	body_mat.roughness = 0.45
+	body_mat.metallic = 0.35
+	var head_mat := StandardMaterial3D.new()
+	head_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	head_mat.albedo_color = Color(0.95, 0.95, 0.9)
+	var tail_mat := StandardMaterial3D.new()
+	tail_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	tail_mat.albedo_color = Color(0.95, 0.18, 0.15)
+
+	var count := 0
+	for lane in _traffic_lanes:
+		var lane_len: float = lane["length"]
+		var cars_for_lane := maxi(2, int(lane_len / 38.0))
+		var used: Array[float] = []
+		for c in cars_for_lane:
+			var dist := _rng.randf_range(0.0, lane_len)
+			var attempts := 8
+			while attempts > 0 and _too_close(dist, used):
+				dist = _rng.randf_range(0.0, lane_len)
+				attempts -= 1
+			used.append(dist)
+			_traffic_cars.append({
+				"lane": _traffic_lanes.find(lane),
+				"dist": dist,
+				"speed": lane["speed"] * _rng.randf_range(0.85, 1.15),
+			})
+			count += 1
+
+	_traffic_body_mm = _make_traffic_multimesh(container, "Bodies", body_mesh, body_mat, count)
+	_traffic_head_mm = _make_traffic_multimesh(container, "Headlights", head_mesh, head_mat, count)
+	_traffic_tail_mm = _make_traffic_multimesh(container, "Taillights", tail_mesh, tail_mat, count)
+	_update_traffic(0.0)
+
+
+func _too_close(dist: float, used: Array[float]) -> bool:
+	for d in used:
+		if absf(dist - d) < TRAFFIC_MIN_GAP:
+			return true
+	return false
+
+
+func _make_light_pair_mesh() -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var bulb := BoxMesh.new()
+	bulb.size = Vector3(0.32, 0.16, 0.12)
+	st.append_from(bulb, 0, Transform3D(Basis.IDENTITY, Vector3(-TRAFFIC_CAR_WIDTH * 0.32, 0.0, 0.0)))
+	st.append_from(bulb, 0, Transform3D(Basis.IDENTITY, Vector3(TRAFFIC_CAR_WIDTH * 0.32, 0.0, 0.0)))
+	return st.commit()
+
+
+func _make_traffic_multimesh(
+	parent: Node3D,
+	name: String,
+	mesh: Mesh,
+	mat: Material,
+	count: int
+) -> MultiMeshInstance3D:
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = mesh
+	mm.instance_count = count
+	var mi := MultiMeshInstance3D.new()
+	mi.name = name
+	mi.multimesh = mm
+	mi.material_override = mat
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(mi)
+	return mi
+
+
+func _compute_traffic_lanes() -> Array[Dictionary]:
+	var lanes: Array[Dictionary] = []
+	var half := (GRID_SIZE - 1) * 0.5
+	var min_c := -half * SPACING
+	var max_c := half * SPACING
+	# Roads run between the building columns/rows, not through them.
+	for k in GRID_SIZE + 1:
+		var x := (float(k) - half - 0.5) * SPACING
+		lanes.append({
+			"start": Vector3(x + TRAFFIC_LANE_OFFSET, TRAFFIC_CAR_HEIGHT * 0.5, min_c),
+			"dir": Vector3(0.0, 0.0, 1.0),
+			"length": max_c - min_c,
+			"speed": _rng.randf_range(7.0, 11.0),
+		})
+		lanes.append({
+			"start": Vector3(x - TRAFFIC_LANE_OFFSET, TRAFFIC_CAR_HEIGHT * 0.5, max_c),
+			"dir": Vector3(0.0, 0.0, -1.0),
+			"length": max_c - min_c,
+			"speed": _rng.randf_range(7.0, 11.0),
+		})
+	for k in GRID_SIZE + 1:
+		var z := (float(k) - half - 0.5) * SPACING
+		lanes.append({
+			"start": Vector3(min_c, TRAFFIC_CAR_HEIGHT * 0.5, z - TRAFFIC_LANE_OFFSET),
+			"dir": Vector3(1.0, 0.0, 0.0),
+			"length": max_c - min_c,
+			"speed": _rng.randf_range(7.0, 11.0),
+		})
+		lanes.append({
+			"start": Vector3(max_c, TRAFFIC_CAR_HEIGHT * 0.5, z + TRAFFIC_LANE_OFFSET),
+			"dir": Vector3(-1.0, 0.0, 0.0),
+			"length": max_c - min_c,
+			"speed": _rng.randf_range(7.0, 11.0),
+		})
+	return lanes
 
 
 func _build_powerups() -> void:
