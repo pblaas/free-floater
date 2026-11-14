@@ -18,12 +18,13 @@ momentum as you swing from rooftop to rooftop.
   snap-turn on the ground, left **AX** to jump, right **AX** to respawn.
 - **Procedural city** — 200+ webbable buildings drawn as merged, draw-call-
   cheap facade meshes with per-palette high-res albedo, roughness/metallic,
-  and normal maps; setbacks, parapets, roof props, and varied window density.
+  and normal maps; setbacks, parapets, roof props, varied window density,
+  and a street/sidewalk grid below.
 - **Day/night switches** — glowing levers spawn on two colored landmark
   towers. One toggles **day ↔ night** (dark city, fully lit windows); the
   other toggles **day ↔ twilight** (starry sky with daytime-colored
-  buildings and scattered warm windows, as if someone is home). Pull again
-  to switch back to day.
+  buildings, darker twilight lighting, and scattered warm windows as if
+  someone is home). Pull again to switch back to day.
 - **Neon nights** — some buildings carry thin green/purple neon corner
   strips that glow after dark.
 - **Visible hands** — low-poly gloved hands in the web-shoot pose on both

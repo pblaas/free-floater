@@ -61,12 +61,13 @@ const DAY_FOG_HEIGHT_DENSITY := 0.022
 const NIGHT_FOG_HEIGHT_DENSITY := 0.12
 const DAY_FOG_SKY_AFFECT := 0.05
 const BACKDROP_NIGHT_SCALE := 0.15
+const BACKDROP_TWILIGHT_SCALE := 0.45
 const WINDOW_WARM := Color(1.0, 0.72, 0.42)
 const NIGHT_WALL_SCALE := 0.32
 const NEON_GREEN := Color(0.25, 1.0, 0.6)
 const NEON_PURPLE := Color(0.66, 0.3, 1.0)
 const NEON_STRIP_CHANCE := 0.07
-const TWILIGHT_LIT_CHANCE := 0.35
+const TWILIGHT_LIT_CHANCE := 0.28
 const GLASS_DAY := Color(0.3, 0.42, 0.56)
 const GLASS_NIGHT := Color(0.015, 0.02, 0.032)
 const LANDMARK_COLORS := [
@@ -167,9 +168,9 @@ func _make_facade_set(
 	var glass := GLASS_DAY * _rng.randf_range(0.85, 1.15)
 	return {
 		"day": _raster_day(base, tex_w, tex_h, wf, hf, glass),
+		"twilight": _raster_twilight(base, plan, tex_w, tex_h, wf, hf, glass),
 		"night": _raster_night(base * NIGHT_WALL_SCALE, plan, tex_w, tex_h, wf, hf),
 		"mask": _raster_mask(plan, tex_w, tex_h, wf, hf),
-		"mask_twilight": _raster_mask_twilight(plan, tex_w, tex_h, wf, hf),
 		"spec": _raster_spec(tex_w, tex_h, wf, hf),
 		"normal": _raster_normal(tex_w, tex_h, wf, hf),
 		"color": color,
@@ -280,18 +281,37 @@ func _raster_normal(w: int, h: int, wf: float, hf: float) -> ImageTexture:
 	return ImageTexture.create_from_image(img)
 
 
-## Sparse "someone's home" emission mask for twilight mode.
-func _raster_mask_twilight(plan: PackedByteArray, w: int, h: int, wf: float, hf: float) -> ImageTexture:
-	var img := Image.create(w, h, false, Image.FORMAT_RGB8)
-	img.fill(Color.BLACK)
+## Daytime facade with a scattered subset of windows painted warm, as if
+## interior lights are on. This keeps walls in their daytime color and only
+## the chosen windows read as lit.
+func _raster_twilight(
+	base: Color,
+	plan: PackedByteArray,
+	w: int,
+	h: int,
+	wf: float,
+	hf: float,
+	glass: Color
+) -> ImageTexture:
+	var img := (_raster_day(base, w, h, wf, hf, glass) as ImageTexture).get_image().duplicate()
 	var wins := _window_rects(w, h, wf, hf)
 	for i in wins.size():
 		if plan[i] == 0:
 			continue
 		if _rng.randf() > TWILIGHT_LIT_CHANCE:
 			continue
-		var brightness := _rng.randf_range(0.8, 1.0)
-		img.fill_rect(wins[i], Color(brightness, brightness, brightness))
+		var win := wins[i]
+		var lit := Color(1.0, 0.88, 0.6) * _rng.randf_range(0.9, 1.1)
+		# soft light spill on the wall around the window
+		img.fill_rect(win.grow(14), lit * 0.42)
+		img.fill_rect(win.grow(7), lit * 0.72)
+		var slices := 4
+		for s in slices:
+			var t := float(s) / slices
+			var c := lit.lerp(Color(1.08, 0.96, 0.72), t * 0.5)
+			img.fill_rect(Rect2i(
+				win.position.x, win.position.y + int(win.size.y * t),
+				win.size.x, int(win.size.y * (t + 1.0 / slices)) - int(win.size.y * t)), c)
 	img.generate_mipmaps()
 	return ImageTexture.create_from_image(img)
 
@@ -309,8 +329,11 @@ func _build_ground() -> void:
 	mesh.size = Vector2(GROUND_SIZE, GROUND_SIZE)
 	plane.mesh = mesh
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.16, 0.17, 0.19)
-	mat.roughness = 0.95
+	mat.albedo_texture = _build_street_texture()
+	mat.albedo_color = Color(1.0, 1.0, 1.0)
+	mat.roughness = 0.92
+	var repeats := int(GROUND_SIZE / SPACING)
+	mat.uv1_scale = Vector3(repeats, repeats, 1.0)
 	plane.material_override = mat
 	ground.add_child(plane)
 
@@ -320,6 +343,43 @@ func _build_ground() -> void:
 	shape.shape = box
 	shape.position = Vector3(0.0, -0.25, 0.0)
 	ground.add_child(shape)
+
+
+## One tiled street texture aligned to the building grid: asphalt roads
+## with dashed lane markings, concrete sidewalks, and building-lot pavers.
+func _build_street_texture() -> ImageTexture:
+	var size := 512
+	var img := Image.create(size, size, false, Image.FORMAT_RGB8)
+	var asphalt := Color(0.18, 0.19, 0.21)
+	var sidewalk := Color(0.54, 0.55, 0.57)
+	var lot := Color(0.24, 0.25, 0.27)
+	var line := Color(0.8, 0.8, 0.78)
+	var road_w := 4.2
+	var sw_w := 1.6
+	var half := SPACING * 0.5
+	for y in size:
+		for x in size:
+			var wx := float(x) / size * SPACING
+			var wy := float(y) / size * SPACING
+			var dx := absf(wx - half)
+			var dy := absf(wy - half)
+			var c := lot
+			var on_road := dx < road_w * 0.5 or dy < road_w * 0.5
+			var on_sw := (
+				(dx < road_w * 0.5 + sw_w and dx > road_w * 0.5)
+				or (dy < road_w * 0.5 + sw_w and dy > road_w * 0.5))
+			if on_road:
+				c = asphalt
+				if dx < road_w * 0.18 and int(wy / 3.0) % 2 == 0:
+					c = line
+				if dy < road_w * 0.18 and int(wx / 3.0) % 2 == 0:
+					c = line
+			elif on_sw:
+				c = sidewalk
+			var noise := _rng.randf_range(-0.025, 0.025)
+			img.set_pixel(x, y, c * (1.0 + noise))
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
 
 
 func _build_buildings() -> void:
@@ -816,11 +876,19 @@ func set_mode(mode: Mode) -> void:
 	for entry in _facade_mats:
 		_apply_facade_mode(entry["mat"] as StandardMaterial3D, entry["rec"] as Dictionary)
 	for mat in _backdrop_mats:
-		mat.albedo_color = (mat.get_meta("base") as Color) * (BACKDROP_NIGHT_SCALE if is_night else 1.0)
+		var scale := 1.0
+		match _mode:
+			Mode.NIGHT:
+				scale = BACKDROP_NIGHT_SCALE
+			Mode.TWILIGHT:
+				scale = BACKDROP_TWILIGHT_SCALE
+		mat.albedo_color = (mat.get_meta("base") as Color) * scale
 	for node in _neon_nodes:
 		node.visible = is_night
 	if _sky != null:
 		_sky.sky_material = _procedural_sky_mat if mode == Mode.DAY else _night_sky_mat
+	if _env != null:
+		_env.glow_enabled = mode == Mode.TWILIGHT
 	night_changed.emit(is_night)
 
 
@@ -854,15 +922,9 @@ func _apply_facade_mode(mat: StandardMaterial3D, rec: Dictionary) -> void:
 				mat.emission = WINDOW_WARM
 				mat.emission_energy_multiplier = 0.75
 		Mode.TWILIGHT:
-			mat.albedo_texture = rec["day"]
-			mat.emission_enabled = true
-			mat.emission_texture = rec["mask_twilight"]
-			if rec["landmark"]:
-				mat.emission = (rec["color"] as Color).lightened(0.2)
-				mat.emission_energy_multiplier = 1.4
-			else:
-				mat.emission = WINDOW_WARM
-				mat.emission_energy_multiplier = 1.0
+			mat.albedo_texture = rec["twilight"]
+			mat.emission_enabled = false
+			mat.emission_texture = null
 
 
 func _apply_mode_lighting() -> void:
@@ -875,7 +937,7 @@ func _apply_mode_lighting() -> void:
 				_sun.light_energy = NIGHT_SUN_ENERGY
 				_sun.light_color = NIGHT_SUN_COLOR
 			Mode.TWILIGHT:
-				_sun.light_energy = 0.75
+				_sun.light_energy = 0.55
 				_sun.light_color = Color(0.72, 0.78, 1.0)
 	if _sky_mat != null:
 		match _mode:
@@ -908,14 +970,14 @@ func _apply_mode_lighting() -> void:
 				_env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 				_env.ambient_light_sky_contribution = NIGHT_AMBIENT_SKY
 			Mode.TWILIGHT:
-				_env.fog_light_color = DAY_FOG_COLOR
-				_env.fog_density = DAY_FOG_DENSITY * 0.85
-				_env.fog_height = DAY_FOG_HEIGHT
-				_env.fog_height_density = DAY_FOG_HEIGHT_DENSITY
-				_env.fog_sky_affect = 0.05
+				_env.fog_light_color = Color(0.14, 0.15, 0.2)
+				_env.fog_density = 0.0008
+				_env.fog_height = 12.0
+				_env.fog_height_density = 0.025
+				_env.fog_sky_affect = 0.08
 				_env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-				_env.ambient_light_color = Color(0.18, 0.20, 0.26)
-				_env.ambient_light_energy = 0.65
+				_env.ambient_light_color = Color(0.38, 0.4, 0.46)
+				_env.ambient_light_energy = 0.75
 
 
 func _build_powerups() -> void:
@@ -1091,6 +1153,12 @@ func _build_light_rig() -> void:
 	env.fog_height = DAY_FOG_HEIGHT
 	env.fog_height_density = DAY_FOG_HEIGHT_DENSITY
 	env.fog_sky_affect = DAY_FOG_SKY_AFFECT
+	env.glow_enabled = false
+	env.glow_intensity = 0.55
+	env.glow_strength = 0.65
+	env.glow_bloom = 0.12
+	env.glow_hdr_threshold = 0.55
+	env.glow_hdr_scale = 1.0
 	var night_mat := ShaderMaterial.new()
 	night_mat.shader = load("res://assets/shaders/night_sky.gdshader")
 	_sky = sky
