@@ -515,9 +515,11 @@ func _apply_night_lighting() -> void:
 
 func _add_roof_prop(building: Node3D, width: float, depth: float, height: float) -> void:
 	var roll := _rng.randf()
-	var prop := MeshInstance3D.new()
 	var x := _rng.randf_range(-(width * 0.5 - 1.6), width * 0.5 - 1.6)
 	var z := _rng.randf_range(-(depth * 0.5 - 1.6), depth * 0.5 - 1.6)
+	if roll >= 0.3:
+		return
+	var prop := MeshInstance3D.new()
 	if roll < 0.18:
 		prop.name = "AcUnit"
 		var mesh := BoxMesh.new()

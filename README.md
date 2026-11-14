@@ -62,8 +62,8 @@ build/                     Export output (git-ignored)
 ## Build & test
 
 ```sh
-# Headless test suite
-env -u DISPLAY godot --headless --path app -s res://tests/test_web.gd
+# Headless test suite (XR disabled)
+env -u DISPLAY godot --headless --xr-mode off --path app -s res://tests/test_web.gd
 
 # Export build/free_floater.arm64 (stamps the version automatically)
 ./tools/export.sh

@@ -9,18 +9,35 @@ var failures := 0
 
 
 func _init() -> void:
-	_test_rope_math()
-	_test_city_generation()
-	_test_web_rig_scene()
-	_test_scoring()
-	_test_day_night()
-	_test_main_scene()
-	_test_build_version()
+	await _test_rope_math()
+	await _test_city_generation()
+	await _test_web_rig_scene()
+	await _test_scoring()
+	await _test_day_night()
+	await _test_main_scene()
+	await _test_build_version()
+	await _stop_audio()
 	if failures == 0:
 		print("ALL TESTS PASSED")
 	else:
 		print("FAILED: %d test(s)" % failures)
 	quit(1 if failures > 0 else 0)
+
+
+func _stop_audio() -> void:
+	await process_frame
+	for player in root.find_children("*", "AudioStreamPlayer", true, false):
+		(player as AudioStreamPlayer).stop()
+	await process_frame
+	await process_frame
+
+
+func _stop_rig_audio(rig: Node) -> void:
+	await process_frame
+	for player in rig.find_children("*", "AudioStreamPlayer", true, false):
+		(player as AudioStreamPlayer).stop()
+	for i in 12:
+		await process_frame
 
 
 func check(condition: bool, message: String) -> void:
@@ -112,12 +129,13 @@ func _test_web_rig_scene() -> void:
 	if rig_scene == null:
 		return
 	root.add_child(rig_scene)
-	await process_frame
 	var rig := rig_scene.get_node_or_null("XROrigin3D") as WebRigScript
 	check(rig != null, "WebRig on XROrigin3D")
+	check(rig != null and rig._velocity.length_squared() < 0.000001, "starts at rest")
 	if rig == null:
 		rig_scene.queue_free()
 		return
+	await process_frame
 	check(rig.camera != null, "camera wired")
 	check(rig.left_controller != null and rig.right_controller != null, "controllers wired")
 	var webs: Dictionary = rig._webs
@@ -137,12 +155,12 @@ func _test_web_rig_scene() -> void:
 	var wind := rig.get_node_or_null("WindLoop") as AudioStreamPlayer
 	check(wind != null and wind.stream != null, "wind loop player exists")
 	check(wind.stream.loop_mode == AudioStreamWAV.LOOP_FORWARD, "wind loop is seamless")
-	check(rig._velocity.length_squared() < 0.000001, "starts at rest")
 	check(WebRigScript.MUSIC_TRACKS.size() >= 5, "music playlist has multiple tracks")
 	check(rig._playlist.size() == WebRigScript.MUSIC_TRACKS.size(), "playlist covers every track")
 	check(rig._track_index == 0, "playlist starts on first track")
 	check(rig._music != null and rig._music.stream != null, "background music loaded")
 	check(rig._music.stream.loop == false, "playlist tracks advance instead of looping")
+	await _stop_rig_audio(rig)
 	rig_scene.queue_free()
 	await process_frame
 
@@ -287,11 +305,13 @@ func _test_main_scene() -> void:
 		return
 	root.add_child(main_scene)
 	await process_frame
+	await process_frame
 	var rig := main_scene.get_node_or_null("XROrigin3D") as WebRigScript
 	var city := main_scene.get_node_or_null("City") as CityBuilderScript
 	check(rig != null and city != null, "main wires city and rig")
 	if rig != null and city != null:
 		check(rig.global_position.distance_to(city.spawn_point) < 0.5, "player respawned at city spawn")
+		await _stop_rig_audio(rig)
 	main_scene.queue_free()
 	await process_frame
 

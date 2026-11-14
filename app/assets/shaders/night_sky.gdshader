@@ -3,11 +3,18 @@ shader_type sky;
 // Night sky for the city: gradient + light-pollution horizon glow,
 // twinkling star layers, a soft milky-way band, two spiral galaxies
 // and periodic shooting stars. TIME drives twinkle + meteors.
+//
+// Perf notes (mobile GPU): all angular falloffs use the squared-chord form
+// exp(-2*(1-dot)/r^2) instead of acos + pow + exp, and per-meteor arc
+// endpoints are computed once per meteor instead of once per trail sample.
 
 uniform vec3 top_color : source_color = vec3(0.006, 0.012, 0.038);
 uniform vec3 horizon_color : source_color = vec3(0.045, 0.055, 0.095);
 uniform vec3 city_glow_color : source_color = vec3(0.9, 0.55, 0.25);
 uniform vec3 debug_arc = vec3(0.0); // when non-zero: meteor 0 flies through this direction
+
+const float METEOR_CORE_R2 = 24691.0; // 2 / (0.009 * 0.009): squared-chord falloff
+const float CITY_GLOW_SCALE = 33.3333; // 1 / 0.03
 
 vec3 hash33(vec3 p3) {
 	p3 = fract(p3 * vec3(0.1031, 0.1033, 0.0973));
@@ -29,8 +36,8 @@ vec3 star_layer(vec3 dir, float scale, float density, float sharp) {
 		return vec3(0.0);
 	}
 	vec3 pos = id + 0.5 + (r - 0.5) * 0.6;
-	float d = length(g - pos);
-	float b = exp(-d * d * sharp);
+	float d2 = dot(g - pos, g - pos);
+	float b = exp(-d2 * sharp);
 	float twinkle = 0.7 + 0.3 * sin(TIME * (1.5 + 2.0 * r.x) + r.y * 6.28);
 	return vec3(b * twinkle * (0.5 + 0.5 * r.y));
 }
@@ -51,33 +58,37 @@ vec3 milkyway(vec3 dir) {
 }
 
 vec3 galaxy(vec3 dir, vec3 center, vec3 tint, float size, float arms) {
-	float ang = acos(clamp(dot(dir, center), -1.0, 1.0));
-	if (ang > size * 2.5) {
+	float co = dot(dir, center);
+	float lim = size * 2.5;
+	if (co < cos(lim)) {
 		return vec3(0.0);
 	}
+	// co ~ cos(ang); squared-chord form keeps the falloffs identical for
+	// these small disk radii without acos.
+	float rho2 = max(2.0 * (1.0 - co), 0.0);
 	vec3 t1 = normalize(cross(center, vec3(0.2, 1.0, 0.13)));
 	vec3 t2 = cross(center, t1);
 	vec2 p = vec2(dot(dir, t1), dot(dir, t2));
-	float rho = length(p);
-	float theta = atan(p.y, p.x) + rho * 5.5;
+	float theta = atan(p.y, p.x) + sqrt(rho2) * 5.5;
 	float arm = 0.5 + 0.5 * cos(theta * arms);
-	float core = exp(-pow(rho / (size * 0.22), 2.0));
-	float disk = exp(-pow(rho / size, 2.2));
+	float core_r = 1.0 / (size * 0.22);
+	float core = exp(-rho2 * core_r * core_r);
+	float rn2 = rho2 / (size * size);
+	float disk = exp(-pow(rn2, 1.1)); // pow(rho/size, 2.2) via the squared chord
 	float b = disk * (0.28 + 0.72 * pow(arm, 1.6)) + core * 1.2;
 	return tint * b;
 }
 
-vec3 meteor_arc(float fi, float cycle, float prog) {
-	// deterministic arc endpoints per meteor + cycle (kept low over the skyline)
-	vec3 a = normalize(vec3(
+// Deterministic arc endpoints per meteor + cycle (kept low over the skyline).
+void arcs(float fi, float cycle, out vec3 a, out vec3 b) {
+	a = normalize(vec3(
 		hash13(vec3(fi, cycle, 1.0)) - 0.5,
 		0.04 + 0.18 * hash13(vec3(fi, cycle, 2.0)),
 		hash13(vec3(fi, cycle, 3.0)) - 0.5));
-	vec3 b = normalize(a + vec3(
+	b = normalize(a + vec3(
 		hash13(vec3(fi, cycle, 4.0)) - 0.5,
 		(hash13(vec3(fi, cycle, 5.0)) - 0.5) * 0.3,
 		hash13(vec3(fi, cycle, 6.0)) - 0.5) * 0.9);
-	return normalize(mix(a, b, prog));
 }
 
 vec3 meteors(vec3 dir) {
@@ -92,21 +103,22 @@ vec3 meteors(vec3 dir) {
 		}
 		float prog = phase / 0.16;
 		float cycle = floor(TIME / period + offset);
+		vec3 da = vec3(0.0);
+		vec3 db = vec3(0.0);
 		if (fi < 0.5 && debug_arc != vec3(0.0)) {
 			cycle = 0.0;
+			da = normalize(debug_arc);
+			db = normalize(da + vec3(0.35, 0.05, -0.1));
+		} else {
+			arcs(fi, cycle, da, db);
 		}
 		float fade = smoothstep(0.0, 0.2, prog) * (1.0 - smoothstep(0.55, 1.0, prog));
 		float glow = 0.0;
 		for (int k = 0; k < 4; k++) {
 			float t = max(prog - float(k) * 0.05, 0.0);
-			vec3 p = meteor_arc(fi, cycle, t);
-			if (fi < 0.5 && debug_arc != vec3(0.0)) {
-				vec3 da = normalize(debug_arc);
-				vec3 db = normalize(da + vec3(0.35, 0.05, -0.1));
-				p = normalize(mix(da, db, t));
-			}
-			float d = acos(clamp(dot(dir, p), -1.0, 1.0));
-			glow += exp(-pow(d / 0.009, 2.0)) * (3.6 / (1.0 + float(k) * 1.6));
+			vec3 p = normalize(mix(da, db, t));
+			float u = 1.0 - dot(dir, p);
+			glow += exp(-u * METEOR_CORE_R2) * (3.6 / (1.0 + float(k) * 1.6));
 		}
 		col += vec3(0.9, 0.95, 1.0) * glow * fade;
 	}
@@ -117,7 +129,8 @@ void sky() {
 	vec3 dir = normalize(EYEDIR);
 	float h = dir.y;
 	vec3 col = mix(horizon_color, top_color, clamp(h * 1.4 + 0.1, 0.0, 1.0));
-	col += city_glow_color * exp(-pow(max(h, 0.0) / 0.03, 2.0)) * 0.01;
+	float gh = max(h, 0.0) * CITY_GLOW_SCALE;
+	col += city_glow_color * exp(-gh * gh) * 0.01;
 	col = mix(col, horizon_color * 0.4, smoothstep(0.0, -0.25, h));
 	col += milkyway(dir);
 	col += galaxy(dir, normalize(vec3(-0.55, 0.42, 0.4)), vec3(0.5, 0.38, 0.85), 0.16, 2.0) * 1.1;
