@@ -292,18 +292,30 @@ func _test_day_night() -> void:
 
 	var neon_g := city.get_node("Buildings").get_node_or_null("NeonGreen") as GeometryInstance3D
 	var neon_p := city.get_node("Buildings").get_node_or_null("NeonPurple") as GeometryInstance3D
-	check(neon_g != null and neon_p != null, "merged neon meshes exist")
-	check(neon_g != null and not neon_g.visible, "neon hidden during day")
+	check(neon_g == null and neon_p == null, "neon meshes not built")
 	city.set_night(true)
-	check(neon_g != null and neon_g.visible and neon_p.visible, "neon glows at night")
 	var night_env: Environment = city.get_node("WorldEnv").environment
 	check(night_env.sky.sky_material is ShaderMaterial, "night swaps in starfield sky shader")
 	city.set_night(false)
-	check(not neon_g.visible, "neon off again in day")
 	check(
 		city.get_node("WorldEnv").environment.sky.sky_material is ProceduralSkyMaterial,
 		"day restores procedural sky"
 	)
+	var clouds := city.get_node_or_null("Clouds")
+	check(clouds != null and clouds.get_child_count() == city.CLOUD_COUNT,
+			"day cloud layer built (%d clouds)" % (clouds.get_child_count() if clouds else 0))
+	if clouds != null and clouds.get_child_count() > 0:
+		var cloud := clouds.get_child(0) as MeshInstance3D
+		check(cloud.visible, "clouds visible in day")
+		check(cloud.position.y >= city.CLOUD_MIN_Y, "clouds fly above the rooftops (y=%.0f)" % cloud.position.y)
+		var before: Vector3 = cloud.position
+		city._update_clouds(10.0)
+		check(cloud.position != before, "clouds drift with the wind")
+		city._update_clouds(-10.0)
+		city.set_night(true)
+		check(not cloud.visible, "clouds hidden at night")
+		city.set_night(false)
+		check(cloud.visible, "clouds return in day")
 	city.queue_free()
 	await process_frame
 

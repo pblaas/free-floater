@@ -8,8 +8,8 @@ shader_type sky;
 // exp(-2*(1-dot)/r^2) instead of acos + pow + exp, and per-meteor arc
 // endpoints are computed once per meteor instead of once per trail sample.
 
-uniform vec3 top_color : source_color = vec3(0.006, 0.012, 0.038);
-uniform vec3 horizon_color : source_color = vec3(0.045, 0.055, 0.095);
+uniform vec3 top_color : source_color = vec3(0.004, 0.008, 0.026);
+uniform vec3 horizon_color : source_color = vec3(0.026, 0.032, 0.055);
 uniform vec3 city_glow_color : source_color = vec3(0.9, 0.55, 0.25);
 uniform vec3 debug_arc = vec3(0.0); // when non-zero: meteor 0 flies through this direction
 
@@ -130,7 +130,7 @@ void sky() {
 	float h = dir.y;
 	vec3 col = mix(horizon_color, top_color, clamp(h * 1.4 + 0.1, 0.0, 1.0));
 	float gh = max(h, 0.0) * CITY_GLOW_SCALE;
-	col += city_glow_color * exp(-gh * gh) * 0.01;
+	col += city_glow_color * exp(-gh * gh) * 0.006;
 	col = mix(col, horizon_color * 0.4, smoothstep(0.0, -0.25, h));
 	col += milkyway(dir);
 	col += galaxy(dir, normalize(vec3(-0.55, 0.42, 0.4)), vec3(0.5, 0.38, 0.85), 0.16, 2.0) * 0.6;

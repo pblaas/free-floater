@@ -118,6 +118,8 @@ var _now_playing_time := 0.0
 var _now_playing: Label3D
 var _thud: AudioStreamPlayer
 var _wind: AudioStreamPlayer
+var _last_status := ""
+var _last_score := -1
 
 
 func _ready() -> void:
@@ -1042,7 +1044,8 @@ func _update_hud(delta: float) -> void:
 		_hud_time -= delta
 		if _hud_time <= 0.0:
 			_hint.visible = false
-	if _score_label != null:
+	if _score_label != null and _score != _last_score:
+		_last_score = _score
 		_score_label.text = _format_score(_score)
 	if _chain_pulse > 0.0:
 		_chain_pulse = maxf(0.0, _chain_pulse - delta * 2.5)
@@ -1064,13 +1067,19 @@ func _update_hud(delta: float) -> void:
 			var label := "LOW-G" if kind == PowerUp.LOWGRAV else "TURBO"
 			buffs += "  ·  %s %ds" % [label, int(ceil(float(_powerup_times[kind])))]
 	var speed := _velocity.length()
+	# Building the status string every frame churns allocations, and each
+	# distinct value regenerates the Label3D glyph mesh — guard both.
+	var status := ""
 	if bool(_webs["L"]["attached"]) or bool(_webs["R"]["attached"]):
 		var reel_note := "  ·  reel" if _grip_held() else ""
-		_status.text = "web: %s  ·  %.1f m/s%s%s" % [sides.strip_edges(), speed, reel_note, buffs]
+		status = "web: %s  ·  %.1f m/s%s%s" % [sides.strip_edges(), speed, reel_note, buffs]
 	elif speed > 1.0:
-		_status.text = "%.1f m/s%s" % [speed, buffs]
+		status = "%.1f m/s%s" % [speed, buffs]
 	else:
-		_status.text = buffs.strip_edges()
+		status = buffs.strip_edges()
+	if status != _last_status:
+		_last_status = status
+		_status.text = status
 
 
 func _city() -> CityBuilder:

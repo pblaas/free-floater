@@ -34,13 +34,13 @@ const SETBACK_TALL := 30.0
 const SETBACK_MID := 21.0
 const POWERUP_COUNT := 14
 const AIR_POWERUP_COUNT := 8
-const NIGHT_LIT_EXTRA := 0.16
+const NIGHT_LIT_EXTRA := 0.08
 const NIGHT_SUN_ENERGY := 0.14
 const DAY_SUN_ENERGY := 1.1
 const NIGHT_SUN_COLOR := Color(0.55, 0.63, 0.95)
 const DAY_SUN_COLOR := Color(1.0, 0.95, 0.85)
 const DAY_AMBIENT_SKY := 0.7
-const NIGHT_AMBIENT_SKY := 1.0
+const NIGHT_AMBIENT_SKY := 0.7
 const TWILIGHT_AMBIENT_SKY := 0.85
 const SHADOW_MAX_DISTANCE := 160.0
 const NIGHT_SKY_TOP := Color(0.012, 0.02, 0.05)
@@ -63,15 +63,21 @@ const DAY_FOG_SKY_AFFECT := 0.05
 const BACKDROP_NIGHT_SCALE := 0.15
 const BACKDROP_TWILIGHT_SCALE := 0.45
 const WINDOW_WARM := Color(1.0, 0.72, 0.42)
+const CLOUD_COUNT := 18
+const CLOUD_MIN_Y := 170.0
+const CLOUD_MAX_Y := 260.0
+const CLOUD_MIN_SIZE := 90.0
+const CLOUD_MAX_SIZE := 190.0
+const CLOUD_SPAN := 1100.0
+const CLOUD_WIND := Vector2(2.6, 0.9)
 const TRAFFIC_CAR_LENGTH := 3.3
 const TRAFFIC_CAR_WIDTH := 1.7
 const TRAFFIC_CAR_HEIGHT := 0.7
 const TRAFFIC_LANE_OFFSET := 1.0
 const TRAFFIC_MIN_GAP := 10.0
 const NIGHT_WALL_SCALE := 0.32
-const NEON_GREEN := Color(0.25, 1.0, 0.6)
-const NEON_PURPLE := Color(0.66, 0.3, 1.0)
-const NEON_STRIP_CHANCE := 0.07
+const NIGHT_LIT_FILL := 0.62
+const NIGHT_LIT_DIM_FILL := 0.34
 const TWILIGHT_LIT_CHANCE := 0.28
 const GLASS_DAY := Color(0.3, 0.42, 0.56)
 const GLASS_NIGHT := Color(0.015, 0.02, 0.032)
@@ -102,7 +108,6 @@ var _roof_st := SurfaceTool.new()
 var _ac_st := SurfaceTool.new()
 var _tank_st := SurfaceTool.new()
 var _marker_st := SurfaceTool.new()
-var _neon_sts := {}
 var _backdrop_mats: Array[StandardMaterial3D] = []
 var _sun: DirectionalLight3D
 var _sky: Sky
@@ -110,7 +115,6 @@ var _procedural_sky_mat: ProceduralSkyMaterial
 var _night_sky_mat: ShaderMaterial
 var _sky_mat: ProceduralSkyMaterial
 var _env: Environment
-var _neon_nodes: Array[GeometryInstance3D] = []
 var _roof_mat: StandardMaterial3D
 var _ac_mat: StandardMaterial3D
 var _tank_mat: StandardMaterial3D
@@ -121,6 +125,8 @@ var _traffic_cars: Array[Dictionary] = []
 var _traffic_body_mm: MultiMeshInstance3D
 var _traffic_head_mm: MultiMeshInstance3D
 var _traffic_tail_mm: MultiMeshInstance3D
+var _traffic_frame := 0
+var _cloud_nodes: Array[MeshInstance3D] = []
 
 
 func _ready() -> void:
@@ -132,6 +138,7 @@ func _ready() -> void:
 	_build_powerups()
 	_build_light_rig()
 	_build_backdrop()
+	_build_clouds()
 
 
 func _build_materials() -> void:
@@ -143,7 +150,7 @@ func _build_materials() -> void:
 		Color(0.28, 0.33, 0.30),
 	]
 	for color in palettes:
-		_facade_records.append(_make_facade_set(color, 0.25, Color.WHITE))
+		_facade_records.append(_make_facade_set(color, 0.16, Color.WHITE))
 	_roof_mat = StandardMaterial3D.new()
 	_roof_mat.albedo_color = Color(0.2, 0.21, 0.23)
 	_roof_mat.roughness = 0.95
@@ -249,7 +256,7 @@ func _raster_night(wall: Color, plan: PackedByteArray, w: int, h: int, wf: float
 		var kind := plan[i]
 		var fill := GLASS_NIGHT * _rng.randf_range(0.7, 1.3)
 		if kind != 0:
-			fill = Color(1.0, 0.85, 0.55) * (0.9 if kind == 1 else 0.55)
+			fill = Color(1.0, 0.85, 0.55) * (NIGHT_LIT_FILL if kind == 1 else NIGHT_LIT_DIM_FILL)
 		img.fill_rect(win.grow(3), wall * 0.5)
 		img.fill_rect(win, fill)
 	img.generate_mipmaps()
@@ -264,7 +271,7 @@ func _raster_mask(plan: PackedByteArray, w: int, h: int, wf: float, hf: float) -
 		var kind := plan[i]
 		if kind == 0:
 			continue
-		var brightness := _rng.randf_range(0.75, 1.0) if kind == 1 else _rng.randf_range(0.45, 0.6)
+		var brightness := _rng.randf_range(0.5, 0.75) if kind == 1 else _rng.randf_range(0.3, 0.42)
 		img.fill_rect(wins[i], Color(brightness, brightness, brightness))
 	img.generate_mipmaps()
 	return ImageTexture.create_from_image(img)
@@ -406,12 +413,6 @@ func _build_buildings() -> void:
 	_ac_st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	_tank_st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	_marker_st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	_neon_sts = {
-		NEON_GREEN: SurfaceTool.new(),
-		NEON_PURPLE: SurfaceTool.new(),
-	}
-	for st in _neon_sts.values():
-		(st as SurfaceTool).begin(Mesh.PRIMITIVE_TRIANGLES)
 
 	var half := (GRID_SIZE - 1) * 0.5
 	var center := Vector3.ZERO
@@ -575,14 +576,13 @@ func _spawn_building(
 		Vector3(top["w"] + 0.4, 0.5, top["d"] + 0.4))
 	_append_parapet(pos + Vector3(0.0, height + 0.5, 0.0), top["w"] + 0.4, top["d"] + 0.4)
 	_add_roof_prop(pos + Vector3(0.0, height + 0.5, 0.0), top["w"], top["d"])
-	_spawn_neon(pos, width, depth, height)
 	_maybe_roof_marker(pos, height)
 	return {"pos": pos, "top_y": height + 0.5}
 
 
 func _make_landmark(pos: Vector3, width: float, depth: float, height: float, color: Color) -> Node3D:
 	var rec := _make_facade_set(
-		color.lightened(0.3), 0.85, color, LANDMARK_FACADE_W, LANDMARK_FACADE_H)
+		color.lightened(0.3), 0.35, color, LANDMARK_FACADE_W, LANDMARK_FACADE_H)
 	rec["landmark"] = true
 	var rec_idx := _facade_records.size()
 	_facade_records.append(rec)
@@ -690,7 +690,7 @@ func _commit_merged_meshes(root: Node3D) -> void:
 		mi.material_override = entry["mat"]
 		root.add_child(mi)
 		_apply_facade_mode(entry["mat"] as StandardMaterial3D, entry["rec"] as Dictionary)
-		_facade_mats.append({"mat": entry["mat"], "rec": entry["rec"], "neon": Color(0.0, 0.0, 0.0)})
+		_facade_mats.append({"mat": entry["mat"], "rec": entry["rec"]})
 
 	var roof := _mesh_from(_roof_st, _roof_mat)
 	roof.name = "RoofCaps"
@@ -708,17 +708,6 @@ func _commit_merged_meshes(root: Node3D) -> void:
 	var markers := _mesh_from(_marker_st, marker_mat)
 	markers.name = "RoofMarkers"
 	root.add_child(markers)
-
-	for color in _neon_sts:
-		var mat := StandardMaterial3D.new()
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		mat.albedo_color = color
-		var mesh := _mesh_from(_neon_sts[color], mat)
-		mesh.name = "NeonGreen" if color == NEON_GREEN else "NeonPurple"
-		mesh.visible = false
-		mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		root.add_child(mesh)
-		_neon_nodes.append(mesh)
 
 
 func _mesh_from(st: SurfaceTool, mat: Material) -> MeshInstance3D:
@@ -808,21 +797,8 @@ func _append_parapet(base: Vector3, w: float, d: float) -> void:
 	_append_box(_roof_st, Vector3(base.x - (w * 0.5 - t * 0.5), y, base.z), Vector3(t, ph, d - t * 2.0))
 
 
-## Green/purple neon accents, visible only at night: thin vertical corner
-## strips. Roofline bands were removed because the overhangs hurt night
-## fill-rate and looked visually noisy.
-func _spawn_neon(pos: Vector3, width: float, depth: float, height: float) -> void:
-	if _rng.randf() >= NEON_STRIP_CHANCE:
-		return
-	var neon := NEON_GREEN if _rng.randf() < 0.5 else NEON_PURPLE
-	var st := _neon_sts[neon] as SurfaceTool
-	for corner in 4:
-		var sx := (width * 0.5 - 0.045) * (1.0 if corner % 2 == 0 else -1.0)
-		var sz := (depth * 0.5 - 0.045) * (1.0 if corner < 2 else -1.0)
-		_append_box(
-			st,
-			pos + Vector3(sx, height * 0.5, sz),
-			Vector3(0.09, height, 0.09))
+## Green/purple neon corner strips were removed entirely: they only showed
+## at night, and the extra unshaded geometry hurt night frame rate.
 
 
 func _add_roof_prop(base: Vector3, width: float, depth: float) -> void:
@@ -899,12 +875,12 @@ func set_mode(mode: Mode) -> void:
 			Mode.TWILIGHT:
 				scale = BACKDROP_TWILIGHT_SCALE
 		mat.albedo_color = (mat.get_meta("base") as Color) * scale
-	for node in _neon_nodes:
-		node.visible = is_night
 	if _sky != null:
 		_sky.sky_material = _procedural_sky_mat if mode == Mode.DAY else _night_sky_mat
 	if _env != null:
 		_env.glow_enabled = mode == Mode.TWILIGHT
+	for cloud in _cloud_nodes:
+		cloud.visible = mode == Mode.DAY
 	night_changed.emit(is_night)
 
 
@@ -921,6 +897,8 @@ func _apply_facade_mode(mat: StandardMaterial3D, rec: Dictionary) -> void:
 		Mode.DAY:
 			mat.albedo_texture = rec["day"]
 			mat.emission_texture = null
+			# No mask here — ADD keeps the uniform landmark glow working.
+			mat.emission_operator = BaseMaterial3D.EMISSION_OP_ADD
 			if rec["landmark"]:
 				mat.emission_enabled = true
 				mat.emission = (rec["color"] as Color) * 0.25
@@ -931,12 +909,17 @@ func _apply_facade_mode(mat: StandardMaterial3D, rec: Dictionary) -> void:
 			mat.albedo_texture = rec["night"]
 			mat.emission_enabled = true
 			mat.emission_texture = rec["mask"]
+			# The default emission operator is ADD, which dumps the raw
+			# emission color onto every texel regardless of the mask (walls
+			# glow cream at night). MULTIPLY gates emission by the mask so
+			# only lit windows glow.
+			mat.emission_operator = BaseMaterial3D.EMISSION_OP_MULTIPLY
 			if rec["landmark"]:
 				mat.emission = (rec["color"] as Color).lightened(0.2)
-				mat.emission_energy_multiplier = 1.7
+				mat.emission_energy_multiplier = 1.15
 			else:
 				mat.emission = WINDOW_WARM
-				mat.emission_energy_multiplier = 0.75
+				mat.emission_energy_multiplier = 0.45
 		Mode.TWILIGHT:
 			mat.albedo_texture = rec["twilight"]
 			mat.emission_enabled = false
@@ -945,6 +928,9 @@ func _apply_facade_mode(mat: StandardMaterial3D, rec: Dictionary) -> void:
 
 func _apply_mode_lighting() -> void:
 	if _sun != null:
+		# Night sun energy is 0.14 — shadows re-rendered per frame are pure
+		# waste there, and shadow cost matters on the mobile GPU.
+		_sun.shadow_enabled = _mode != Mode.NIGHT
 		match _mode:
 			Mode.DAY:
 				_sun.light_energy = DAY_SUN_ENERGY
@@ -998,11 +984,127 @@ func _apply_mode_lighting() -> void:
 
 func _process(delta: float) -> void:
 	_update_traffic(delta)
+	_update_clouds(delta)
+
+
+func _update_clouds(delta: float) -> void:
+	if _cloud_nodes.is_empty() or delta <= 0.0:
+		return
+	var half := CLOUD_SPAN * 0.5
+	for mi in _cloud_nodes:
+		var speed := float(mi.get_meta("speed"))
+		mi.position.x += CLOUD_WIND.x * speed * delta
+		mi.position.z += CLOUD_WIND.y * speed * delta
+		if mi.position.x > half:
+			mi.position.x -= CLOUD_SPAN
+		elif mi.position.x < -half:
+			mi.position.x += CLOUD_SPAN
+		if mi.position.z > half:
+			mi.position.z -= CLOUD_SPAN
+		elif mi.position.z < -half:
+			mi.position.z += CLOUD_SPAN
+
+
+## Soft drifting cumulus for day mode: flat noise-textured quads high above
+## the grid, unshaded so the mobile GPU pays no lighting, no shadow casting.
+func _build_clouds() -> void:
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_texture = _make_cloud_texture()
+	mat.albedo_color = Color(1.0, 0.98, 0.96)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
+	mat.disable_fog = true
+	var container := Node3D.new()
+	container.name = "Clouds"
+	add_child(container)
+	for i in CLOUD_COUNT:
+		var mi := MeshInstance3D.new()
+		mi.name = "Cloud%d" % i
+		var size := _rng.randf_range(CLOUD_MIN_SIZE, CLOUD_MAX_SIZE)
+		var pm := PlaneMesh.new()
+		pm.size = Vector2(size, size * _rng.randf_range(0.6, 0.9))
+		mi.mesh = pm
+		mi.material_override = mat
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		var fade := _rng.randf_range(0.08, 0.22)
+		mi.transparency = fade
+		mi.rotation = Vector3(
+			deg_to_rad(_rng.randf_range(-7.0, 7.0)),
+			deg_to_rad(_rng.randf_range(0.0, 360.0)),
+			deg_to_rad(_rng.randf_range(-7.0, 7.0))
+		)
+		mi.position = Vector3(
+			_rng.randf_range(-CLOUD_SPAN, CLOUD_SPAN) * 0.5,
+			_rng.randf_range(CLOUD_MIN_Y, CLOUD_MAX_Y),
+			_rng.randf_range(-CLOUD_SPAN, CLOUD_SPAN) * 0.5
+		)
+		mi.set_meta("speed", _rng.randf_range(0.7, 1.35))
+		container.add_child(mi)
+		# two offset, tilted companion quads so each cloud reads as a clump
+		# instead of one flat pancake
+		for j in 2:
+			var quad := MeshInstance3D.new()
+			quad.name = "Quad%d_%d" % [i, j]
+			var pm2 := PlaneMesh.new()
+			pm2.size = pm.size * _rng.randf_range(0.55, 0.8)
+			quad.mesh = pm2
+			quad.material_override = mat
+			quad.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			quad.transparency = fade
+			quad.position = Vector3(
+				_rng.randf_range(-0.18, 0.18) * size,
+				_rng.randf_range(-3.0, 3.0),
+				_rng.randf_range(-0.18, 0.18) * size
+			)
+			quad.rotation = Vector3(
+				deg_to_rad(_rng.randf_range(-8.0, 8.0)),
+				deg_to_rad(_rng.randf_range(0.0, 360.0)),
+				deg_to_rad(_rng.randf_range(-8.0, 8.0))
+			)
+			mi.add_child(quad)
+		_cloud_nodes.append(mi)
+
+
+## Puffy alpha blob: fbm noise gated by a radial falloff so quads have no
+## hard rectangular edges.
+func _make_cloud_texture() -> ImageTexture:
+	var size := 256
+	var noise := FastNoiseLite.new()
+	noise.seed = CITY_SEED
+	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	noise.frequency = 0.009
+	noise.fractal_octaves = 3
+	var detail := FastNoiseLite.new()
+	detail.seed = CITY_SEED + 1
+	detail.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	detail.frequency = 0.05
+	detail.fractal_octaves = 2
+	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	for y in size:
+		for x in size:
+			var nx := float(x) / size * 2.0 - 1.0
+			var ny := float(y) / size * 2.0 - 1.0
+			var r := sqrt(nx * nx + ny * ny)
+			var broad := noise.get_noise_2d(float(x), float(y)) * 0.5 + 0.5
+			var fine := detail.get_noise_2d(float(x), float(y)) * 0.5 + 0.5
+			var n := broad * 0.75 + fine * 0.35
+			var a := clampf(n * 1.75 - 0.38, 0.0, 1.0) * (1.0 - smoothstep(0.55, 0.95, r))
+			img.set_pixel(x, y, Color(1.0, 1.0, 1.0, a))
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
 
 
 func _update_traffic(delta: float) -> void:
 	if _traffic_body_mm == null or _traffic_cars.is_empty():
 		return
+	# Cars crawl at 7-11 m/s, so refreshing the MultiMesh buffers every other
+	# frame is invisible and halves the per-frame CPU + upload cost.
+	if delta > 0.0:
+		_traffic_frame += 1
+		if _traffic_frame % 2 == 1:
+			return
 	var body_mm := _traffic_body_mm.multimesh
 	var head_mm := _traffic_head_mm.multimesh
 	var tail_mm := _traffic_tail_mm.multimesh
@@ -1334,6 +1436,11 @@ func _build_light_rig() -> void:
 	env.glow_hdr_scale = 1.0
 	var night_mat := ShaderMaterial.new()
 	night_mat.shader = load("res://assets/shaders/night_sky.gdshader")
+	# The night shader is TIME-animated (twinkle + meteors), which makes the
+	# default AUTOMATIC mode re-render the radiance cubemap every frame for
+	# ambient + reflections. QUALITY renders it once per material change; the
+	# background still animates, only the dark blurred reflections stay static.
+	sky.process_mode = Sky.PROCESS_MODE_QUALITY
 	_sky = sky
 	_procedural_sky_mat = sky_mat
 	_night_sky_mat = night_mat
