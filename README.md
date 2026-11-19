@@ -94,6 +94,14 @@ stamp and the in-VR version label read it.
 | Right AX | Respawn |
 | Trigger on roof lever | Toggle day / night or day / twilight |
 
+## Disclaimer
+
+This software is provided "as is", without warranty of any kind, express or
+implied, including but not limited to the warranties of merchantability,
+fitness for a particular purpose, and noninfringement. In no event shall the
+author be liable for any claim, damages, or other liability arising from, out
+of, or in connection with the software or its use.
+
 ## License
 
 All rights reserved — personal project.
